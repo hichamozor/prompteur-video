@@ -108,7 +108,6 @@ class _PrompterScreenState extends State<PrompterScreen>
   // MJPEG stream
   final List<HttpResponse> _mjpegClients = [];
   bool _isConvertingFrame = false;
-  int _frameCounter = 0;
 
   // Serveur WiFi
   HttpServer? _server;
@@ -259,9 +258,6 @@ class _PrompterScreenState extends State<PrompterScreen>
     try {
       _cam!.startImageStream((CameraImage frame) {
         if (_mjpegClients.isEmpty || _isConvertingFrame) return;
-        _frameCounter++;
-        if (_frameCounter % 3 != 0) return; // ~10 fps
-
         if (frame.planes.length < 3) return;
 
         _isConvertingFrame = true;
@@ -486,8 +482,10 @@ class _PrompterScreenState extends State<PrompterScreen>
           final ws = await WebSocketTransformer.upgrade(req);
           _wsClients.add(ws);
           _broadcastStatus();
+          // Envoyer le script actuel au nouveau client
+          try { ws.add('script:${_provider.script}'); } catch (_) {}
           ws.listen(
-            (data) => _handleWsCommand(data.toString()),
+            (data) => _handleWsMessage(data.toString()),
             onDone: () => _wsClients.remove(ws),
             onError: (_) => _wsClients.remove(ws),
             cancelOnError: true,
@@ -518,8 +516,17 @@ class _PrompterScreenState extends State<PrompterScreen>
     } catch (_) {}
   }
 
-  void _handleWsCommand(String cmd) {
-    switch (cmd) {
+  void _handleWsMessage(String raw) {
+    // Script synchronisé depuis le PC
+    if (raw.startsWith('script:')) {
+      final text = raw.substring(7);
+      _provider.updateScript(text);
+      // Revenir au début si le script change
+      if (_scroll.hasClients) _scroll.jumpTo(0);
+      if (_isPlaying) _pauseScrolling();
+      return;
+    }
+    switch (raw) {
       case 'toggle': _togglePlay(); break;
       case 'pause': _pauseScrolling(); break;
       case 'play': if (!_isCountingDown) _startScrolling(); break;
@@ -592,6 +599,16 @@ h1{font-size:18px;color:#6C63FF}
 .kbd{color:#444;font-size:11px;text-align:center;line-height:2.2;max-width:440px}
 kbd{background:#16213E;padding:2px 7px;border-radius:5px;
   color:#888;border:1px solid #333;font-size:11px}
+.script-section{width:100%;max-width:440px;margin-top:8px}
+.script-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.script-label{color:#6C63FF;font-size:11px;font-weight:bold;letter-spacing:1.5px}
+.script-sync{color:#444;font-size:11px}
+.script-sync.ok{color:#4CAF50}
+textarea#script-area{width:100%;height:200px;background:#16213E;color:#fff;
+  border:1.5px solid #2a2a4a;border-radius:12px;padding:12px;font-size:14px;
+  resize:vertical;line-height:1.6;font-family:-apple-system,sans-serif;
+  outline:none;transition:border-color .2s}
+textarea#script-area:focus{border-color:#6C63FF}
 </style>
 </head>
 <body>
@@ -627,11 +644,26 @@ kbd{background:#16213E;padding:2px 7px;border-radius:5px;
   <kbd>Home</kbd> Debut &nbsp;
   <kbd>R</kbd> Enregistrement
 </div>
+<div class="script-section">
+  <div class="script-header">
+    <span class="script-label">SCRIPT</span>
+    <span class="script-sync" id="sync-st">En attente...</span>
+  </div>
+  <textarea id="script-area" placeholder="Collez votre script ici (depuis Google Sheets, Docs, etc.)&#10;&#10;Le texte s'envoie automatiquement sur le t&#233;l&#233;phone d&#232;s que vous arr&#234;tez de taper."></textarea>
+</div>
 <script>
 var ws=new WebSocket('ws://'+location.host+'/ws');
 ws.onopen=function(){document.getElementById('st').innerHTML='<span style="color:#4CAF50">&#9679;</span> Connecte';};
 ws.onclose=function(){document.getElementById('st').innerHTML='<span style="color:#f44">&#9679;</span> Deconnecte';};
 ws.onmessage=function(e){
+  // Script recu depuis le telephone
+  if(e.data.startsWith('script:')){
+    var ta=document.getElementById('script-area');
+    var txt=e.data.substring(7);
+    if(ta.value!==txt) ta.value=txt;
+    setSyncOk();
+    return;
+  }
   var d=JSON.parse(e.data);
   document.getElementById('ip').innerHTML=d.playing?'&#9646;&#9646;':'&#9654;';
   document.getElementById('lp').textContent=d.playing?'PAUSE':'REPRENDRE';
@@ -654,7 +686,22 @@ ws.onmessage=function(e){
   else{document.getElementById('br').classList.remove('on');}
 };
 function s(cmd){if(ws.readyState===1)ws.send(cmd);}
+// Sync script PC → telephone (debounce 500ms)
+var scriptTimer;
+var syncEl=document.getElementById('sync-st');
+function setSyncOk(){syncEl.textContent='Synchronise ✓';syncEl.className='script-sync ok';}
+document.getElementById('script-area').addEventListener('input',function(e){
+  clearTimeout(scriptTimer);
+  syncEl.textContent='En cours...';syncEl.className='script-sync';
+  scriptTimer=setTimeout(function(){
+    if(ws.readyState===1){
+      ws.send('script:'+document.getElementById('script-area').value);
+      setSyncOk();
+    }
+  },500);
+});
 document.addEventListener('keydown',function(e){
+  if(document.activeElement===document.getElementById('script-area')) return;
   switch(e.code){
     case 'Space':e.preventDefault();s('toggle');break;
     case 'ArrowLeft':e.preventDefault();s('rewind2');break;
