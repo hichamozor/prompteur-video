@@ -22,7 +22,6 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.0'
           channel: 'stable'
           cache: true
 
@@ -41,6 +40,10 @@ jobs:
           cp pubspec.yaml /tmp/app/pubspec.yaml
           cp android/app/src/main/AndroidManifest.xml \
              /tmp/app/android/app/src/main/AndroidManifest.xml
+          sed -i 's/compileSdk = flutter.compileSdkVersion/compileSdk = 35/' \
+             /tmp/app/android/app/build.gradle || true
+          sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 35/' \
+             /tmp/app/android/app/build.gradle || true
 
       - name: Flutter pub get
         working-directory: /tmp/app
