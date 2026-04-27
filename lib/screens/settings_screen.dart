@@ -27,26 +27,19 @@ class SettingsScreen extends StatelessWidget {
           // ── TEXTE ──────────────────────────────────────────────
           _Header('TEXTE'),
           _Card([
-            _Slider(
-              icon: Icons.text_fields, label: 'Taille de police',
-              value: s.fontSize, min: 16, max: 80, divs: 32,
-              display: '${s.fontSize.round()}px',
-              onChanged: provider.updateFontSize,
-            ),
+            _Slider(icon: Icons.text_fields, label: 'Taille police',
+                value: s.fontSize, min: 16, max: 80, divs: 32,
+                display: '${s.fontSize.round()}px', onChanged: provider.updateFontSize),
             _Div(),
-            _Slider(
-              icon: Icons.format_line_spacing, label: 'Interligne',
-              value: s.lineSpacing, min: 1.0, max: 3.0, divs: 20,
-              display: s.lineSpacing.toStringAsFixed(1),
-              onChanged: (v) => upd(s.copyWith(lineSpacing: v)),
-            ),
+            _Slider(icon: Icons.format_line_spacing, label: 'Interligne',
+                value: s.lineSpacing, min: 1.0, max: 3.0, divs: 20,
+                display: s.lineSpacing.toStringAsFixed(1),
+                onChanged: (v) => upd(s.copyWith(lineSpacing: v))),
             _Div(),
-            _Slider(
-              icon: Icons.margin, label: 'Marges',
-              value: s.marginHorizontal, min: 0, max: 64, divs: 16,
-              display: '${s.marginHorizontal.round()}',
-              onChanged: (v) => upd(s.copyWith(marginHorizontal: v)),
-            ),
+            _Slider(icon: Icons.margin, label: 'Marges',
+                value: s.marginHorizontal, min: 0, max: 64, divs: 16,
+                display: '${s.marginHorizontal.round()}',
+                onChanged: (v) => upd(s.copyWith(marginHorizontal: v))),
             _Div(),
             ListTile(
               leading: const Icon(Icons.font_download, color: Color(0xFF6C63FF), size: 20),
@@ -92,10 +85,8 @@ class SettingsScreen extends StatelessWidget {
               title: const Text('Couleur du texte', style: TextStyle(color: Colors.white70, fontSize: 14)),
               trailing: _ColorRow(
                 selected: s.textColor,
-                colors: const [
-                  Colors.white, Colors.yellow, Colors.greenAccent,
-                  Colors.cyanAccent, Colors.orangeAccent, Colors.pinkAccent,
-                ],
+                colors: const [Colors.white, Colors.yellow, Colors.greenAccent,
+                  Colors.cyanAccent, Colors.orangeAccent, Colors.pinkAccent],
                 onPick: (c) => upd(s.copyWith(textColor: c)),
               ),
             ),
@@ -105,31 +96,25 @@ class SettingsScreen extends StatelessWidget {
               title: const Text('Fond du texte', style: TextStyle(color: Colors.white70, fontSize: 14)),
               trailing: _ColorRow(
                 selected: s.backgroundColor,
-                colors: const [
-                  Colors.black, Colors.white, Colors.indigo,
-                  Colors.teal, Colors.brown, Colors.blueGrey,
-                ],
+                colors: const [Colors.black, Colors.white, Colors.indigo,
+                  Colors.teal, Colors.brown, Colors.blueGrey],
                 onPick: (c) => upd(s.copyWith(backgroundColor: c)),
               ),
             ),
             _Div(),
-            _Slider(
-              icon: Icons.opacity, label: 'Opacité du fond',
-              value: s.backgroundOpacity, min: 0, max: 1, divs: 20,
-              display: '${(s.backgroundOpacity * 100).round()}%',
-              onChanged: (v) => upd(s.copyWith(backgroundOpacity: v)),
-            ),
+            _Slider(icon: Icons.opacity, label: 'Opacité fond',
+                value: s.backgroundOpacity, min: 0, max: 1, divs: 20,
+                display: '${(s.backgroundOpacity * 100).round()}%',
+                onChanged: (v) => upd(s.copyWith(backgroundOpacity: v))),
           ]),
 
           // ── DÉFILEMENT ─────────────────────────────────────────
           _Header('DÉFILEMENT'),
           _Card([
-            _Slider(
-              icon: Icons.speed, label: 'Vitesse',
-              value: s.scrollSpeed, min: 20, max: 300, divs: 28,
-              display: '${s.scrollSpeed.round()}',
-              onChanged: provider.updateScrollSpeed,
-            ),
+            _Slider(icon: Icons.speed, label: 'Vitesse',
+                value: s.scrollSpeed, min: 20, max: 300, divs: 28,
+                display: '${s.scrollSpeed.round()}',
+                onChanged: provider.updateScrollSpeed),
             _Div(),
             ListTile(
               leading: const Icon(Icons.timer, color: Color(0xFF6C63FF), size: 20),
@@ -146,6 +131,45 @@ class SettingsScreen extends StatelessWidget {
                   DropdownMenuItem(value: 10, child: Text('10 secondes')),
                 ],
                 onChanged: (v) => upd(s.copyWith(countdownSeconds: v ?? 3)),
+              ),
+            ),
+          ]),
+
+          // ── VIDÉO ──────────────────────────────────────────────
+          _Header('VIDÉO'),
+          _Card([
+            ListTile(
+              leading: const Icon(Icons.hd, color: Color(0xFF6C63FF), size: 20),
+              title: const Text('Résolution', style: TextStyle(color: Colors.white70, fontSize: 14)),
+              trailing: DropdownButton<String>(
+                value: s.videoResolution,
+                dropdownColor: const Color(0xFF16213E),
+                style: const TextStyle(color: Colors.white),
+                underline: const SizedBox(),
+                items: const [
+                  DropdownMenuItem(value: 'high', child: Text('720p HD')),
+                  DropdownMenuItem(value: 'veryHigh', child: Text('1080p Full HD')),
+                  DropdownMenuItem(value: 'ultraHigh', child: Text('4K Ultra HD')),
+                ],
+                onChanged: (v) => upd(s.copyWith(videoResolution: v ?? 'veryHigh')),
+              ),
+            ),
+            _Div(),
+            ListTile(
+              leading: const Icon(Icons.speed, color: Color(0xFF6C63FF), size: 20),
+              title: const Text('Images / seconde', style: TextStyle(color: Colors.white70, fontSize: 14)),
+              subtitle: const Text('Selon les capacités du téléphone',
+                  style: TextStyle(color: Colors.white38, fontSize: 11)),
+              trailing: DropdownButton<int>(
+                value: s.targetFps,
+                dropdownColor: const Color(0xFF16213E),
+                style: const TextStyle(color: Colors.white),
+                underline: const SizedBox(),
+                items: const [
+                  DropdownMenuItem(value: 30, child: Text('30 fps')),
+                  DropdownMenuItem(value: 60, child: Text('60 fps')),
+                ],
+                onChanged: (v) => upd(s.copyWith(targetFps: v ?? 30)),
               ),
             ),
           ]),
@@ -187,7 +211,8 @@ class _Header extends StatelessWidget {
         padding: const EdgeInsets.only(top: 20, bottom: 6, left: 4),
         child: Text(title,
             style: const TextStyle(
-                color: Color(0xFF6C63FF), fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.8)),
+                color: Color(0xFF6C63FF), fontSize: 11,
+                fontWeight: FontWeight.bold, letterSpacing: 1.8)),
       );
 }
 
@@ -198,7 +223,9 @@ class _Card extends StatelessWidget {
   Widget build(BuildContext context) => Card(
         color: const Color(0xFF16213E),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        child: Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Column(children: children)),
+        child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Column(children: children)),
       );
 }
 
@@ -216,44 +243,33 @@ class _Slider extends StatelessWidget {
   final String display;
   final ValueChanged<double> onChanged;
 
-  const _Slider({
-    required this.icon, required this.label, required this.value,
-    required this.min, required this.max, required this.divs,
-    required this.display, required this.onChanged,
-  });
+  const _Slider({required this.icon, required this.label, required this.value,
+      required this.min, required this.max, required this.divs,
+      required this.display, required this.onChanged});
 
   @override
   Widget build(BuildContext context) => Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-        child: Row(
-          children: [
-            Icon(icon, color: const Color(0xFF6C63FF), size: 20),
-            const SizedBox(width: 10),
-            SizedBox(
-                width: 110,
-                child: Text(label, style: const TextStyle(color: Colors.white70, fontSize: 13))),
-            Expanded(
-              child: SliderTheme(
-                data: const SliderThemeData(
-                  activeTrackColor: Color(0xFF6C63FF),
-                  thumbColor: Color(0xFF6C63FF),
-                  inactiveTrackColor: Colors.white24,
-                  trackHeight: 2,
-                  thumbShape: RoundSliderThumbShape(enabledThumbRadius: 7),
-                ),
-                child: Slider(
-                    value: value.clamp(min, max),
-                    min: min, max: max, divisions: divs,
-                    onChanged: onChanged),
-              ),
+        child: Row(children: [
+          Icon(icon, color: const Color(0xFF6C63FF), size: 20),
+          const SizedBox(width: 10),
+          SizedBox(width: 100,
+              child: Text(label, style: const TextStyle(color: Colors.white70, fontSize: 13))),
+          Expanded(
+            child: SliderTheme(
+              data: const SliderThemeData(
+                activeTrackColor: Color(0xFF6C63FF), thumbColor: Color(0xFF6C63FF),
+                inactiveTrackColor: Colors.white24, trackHeight: 2,
+                thumbShape: RoundSliderThumbShape(enabledThumbRadius: 7)),
+              child: Slider(value: value.clamp(min, max), min: min, max: max,
+                  divisions: divs, onChanged: onChanged),
             ),
-            SizedBox(
-                width: 46,
-                child: Text(display,
-                    style: const TextStyle(color: Colors.white, fontSize: 12),
-                    textAlign: TextAlign.right)),
-          ],
-        ),
+          ),
+          SizedBox(width: 46,
+              child: Text(display,
+                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  textAlign: TextAlign.right)),
+        ]),
       );
 }
 
@@ -269,7 +285,8 @@ class _Switch extends StatelessWidget {
   Widget build(BuildContext context) => ListTile(
         leading: Icon(icon, color: const Color(0xFF6C63FF), size: 20),
         title: Text(label, style: const TextStyle(color: Colors.white70, fontSize: 14)),
-        trailing: Switch(value: value, onChanged: onChanged, activeColor: const Color(0xFF6C63FF)),
+        trailing: Switch(value: value, onChanged: onChanged,
+            activeColor: const Color(0xFF6C63FF)),
       );
 }
 
@@ -283,23 +300,19 @@ class _ColorRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Row(
         mainAxisSize: MainAxisSize.min,
-        children: colors
-            .map((c) => GestureDetector(
-                  onTap: () => onPick(c),
-                  child: Container(
-                    width: 24, height: 24,
-                    margin: const EdgeInsets.only(left: 5),
-                    decoration: BoxDecoration(
-                      color: c,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: selected.value == c.value ? const Color(0xFF6C63FF) : Colors.white30,
-                        width: selected.value == c.value ? 2.5 : 1,
-                      ),
-                    ),
-                  ),
-                ))
-            .toList(),
+        children: colors.map((c) => GestureDetector(
+              onTap: () => onPick(c),
+              child: Container(
+                width: 24, height: 24,
+                margin: const EdgeInsets.only(left: 5),
+                decoration: BoxDecoration(
+                  color: c, shape: BoxShape.circle,
+                  border: Border.all(
+                    color: selected.value == c.value
+                        ? const Color(0xFF6C63FF) : Colors.white30,
+                    width: selected.value == c.value ? 2.5 : 1)),
+              ),
+            )).toList(),
       );
 }
 
@@ -319,8 +332,8 @@ class _AlignBtn extends StatelessWidget {
           decoration: BoxDecoration(
             color: active ? const Color(0xFF6C63FF) : Colors.transparent,
             borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: active ? const Color(0xFF6C63FF) : Colors.white30),
-          ),
+            border: Border.all(
+                color: active ? const Color(0xFF6C63FF) : Colors.white30)),
           child: Icon(icon, color: Colors.white, size: 18),
         ),
       );

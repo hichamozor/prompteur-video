@@ -1,7 +1,7 @@
 name: prompteur_video
 description: Application Prompteur Vidéo pour Android
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.0+2
 
 environment:
   sdk: '>=3.2.0 <4.0.0'
@@ -13,6 +13,7 @@ dependencies:
   provider: ^6.1.2
   permission_handler: ^11.3.1
   wakelock_plus: ^1.2.8
+  gal: ^1.1.0
 
 dependency_overrides:
   package_info_plus: '>=8.0.0 <9.0.0'

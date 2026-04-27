@@ -15,6 +15,9 @@ class PrompterSettings {
   final bool keepScreenOn;
   final bool showCamera;
   final bool useFrontCamera;
+  // Vidéo
+  final String videoResolution; // 'high' (720p) | 'veryHigh' (1080p) | 'ultraHigh' (4K)
+  final int targetFps;          // 30 | 60
 
   const PrompterSettings({
     this.fontSize = 38.0,
@@ -31,6 +34,8 @@ class PrompterSettings {
     this.keepScreenOn = true,
     this.showCamera = true,
     this.useFrontCamera = true,
+    this.videoResolution = 'veryHigh',
+    this.targetFps = 30,
   });
 
   PrompterSettings copyWith({
@@ -48,6 +53,8 @@ class PrompterSettings {
     bool? keepScreenOn,
     bool? showCamera,
     bool? useFrontCamera,
+    String? videoResolution,
+    int? targetFps,
   }) {
     return PrompterSettings(
       fontSize: fontSize ?? this.fontSize,
@@ -64,6 +71,8 @@ class PrompterSettings {
       keepScreenOn: keepScreenOn ?? this.keepScreenOn,
       showCamera: showCamera ?? this.showCamera,
       useFrontCamera: useFrontCamera ?? this.useFrontCamera,
+      videoResolution: videoResolution ?? this.videoResolution,
+      targetFps: targetFps ?? this.targetFps,
     );
   }
 }
