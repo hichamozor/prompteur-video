@@ -1,6 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
@@ -15,9 +13,13 @@ import 'package:provider/provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../models/settings_model.dart';
+import '../providers/scripts_provider.dart';
 import '../providers/settings_provider.dart';
+import '../services/logger.dart';
+import '../services/markdown_parser.dart';
+import '../services/wifi_server.dart';
 
-// ── Données pour l'isolate de conversion YUV → JPEG ───────────────────────
+// ── Conversion YUV → JPEG en isolate ─────────────────────────────────────────
 
 class _YuvParams {
   final int width, height, yStride, uvStride, uvPixelStride, rotation;
@@ -36,9 +38,7 @@ class _YuvParams {
   });
 }
 
-// Fonction top-level appelée dans un isolate via compute()
 Uint8List _convertYuvToJpeg(_YuvParams p) {
-  // Quart de résolution pour la performance (~480x270 pour source 1080p)
   final outW = p.width ~/ 4;
   final outH = p.height ~/ 4;
   final base = img.Image(width: outW, height: outH);
@@ -66,15 +66,15 @@ Uint8List _convertYuvToJpeg(_YuvParams p) {
     }
   }
 
-  final rotated =
-      p.rotation != 0 ? img.copyRotate(base, angle: p.rotation) : base;
+  final rotated = p.rotation != 0 ? img.copyRotate(base, angle: p.rotation) : base;
   return img.encodeJpg(rotated, quality: 50);
 }
 
-// ── Widget ─────────────────────────────────────────────────────────────────
+// ── Widget ───────────────────────────────────────────────────────────────────
 
 class PrompterScreen extends StatefulWidget {
-  const PrompterScreen({super.key});
+  final String scriptId;
+  const PrompterScreen({super.key, required this.scriptId});
 
   @override
   State<PrompterScreen> createState() => _PrompterScreenState();
@@ -82,7 +82,7 @@ class PrompterScreen extends StatefulWidget {
 
 class _PrompterScreenState extends State<PrompterScreen>
     with TickerProviderStateMixin {
-  // Caméra
+  // ── Caméra
   CameraController? _cam;
   List<CameraDescription> _cameras = [];
   bool _cameraReady = false;
@@ -90,38 +90,43 @@ class _PrompterScreenState extends State<PrompterScreen>
   double _minExp = -2.0, _maxExp = 2.0, _currentExp = 0.0;
   bool _hideTextForZoom = false;
   int _sensorRotation = 90;
+  bool _aeLocked = false;
 
-  // Défilement
+  // ── Tap-to-focus reticle
+  Offset? _focusReticle;
+  Timer? _focusReticleTimer;
+
+  // ── Défilement
   final ScrollController _scroll = ScrollController();
   Ticker? _ticker;
   double _lastTickUs = -1;
   bool _isPlaying = false;
   bool _isCountingDown = false;
   int _countdownValue = 0;
+  Timer? _countdownTimer;
   bool _showControls = true;
 
-  // Enregistrement
+  // ── Enregistrement
   bool _isRecording = false;
   Duration _recDuration = Duration.zero;
   Timer? _recTimer;
 
-  // MJPEG stream
-  final List<HttpResponse> _mjpegClients = [];
+  // ── MJPEG
   bool _isConvertingFrame = false;
 
-  // Serveur WiFi
-  HttpServer? _server;
-  final Set<WebSocket> _wsClients = {};
-  String _serverIp = '';
-  static const int _port = 8080;
+  // ── Serveur WiFi
+  final WifiServer _wifi = WifiServer();
+  StreamSubscription<String>? _wsSub;
   Timer? _statusTimer;
 
-  late SettingsProvider _provider;
+  late SettingsProvider _settingsProvider;
+  late ScriptsProvider _scriptsProvider;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _provider = context.read<SettingsProvider>();
+    _settingsProvider = context.read<SettingsProvider>();
+    _scriptsProvider = context.read<ScriptsProvider>();
   }
 
   @override
@@ -130,7 +135,7 @@ class _PrompterScreenState extends State<PrompterScreen>
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       await _initCamera();
-      await _startWifiServer();
+      await _startWifi();
       _statusTimer = Timer.periodic(
           const Duration(seconds: 1), (_) => _broadcastStatus());
     });
@@ -143,30 +148,30 @@ class _PrompterScreenState extends State<PrompterScreen>
     _scroll.dispose();
     _recTimer?.cancel();
     _statusTimer?.cancel();
-    _server?.close(force: true);
-    for (final ws in List.of(_wsClients)) {
-      try { ws.close(); } catch (_) {}
-    }
-    for (final r in List.of(_mjpegClients)) {
-      try { r.close(); } catch (_) {}
-    }
+    _countdownTimer?.cancel();
+    _focusReticleTimer?.cancel();
+    _wsSub?.cancel();
+    _wifi.dispose();
     _cam?.dispose();
     WakelockPlus.disable();
     super.dispose();
   }
 
-  // ── Caméra ──────────────────────────────────────────────────────────────
+  // ── Caméra ─────────────────────────────────────────────────────────────────
 
   ResolutionPreset _resolutionPreset() {
-    switch (_provider.settings.videoResolution) {
-      case 'high': return ResolutionPreset.high;
-      case 'ultraHigh': return ResolutionPreset.ultraHigh;
-      default: return ResolutionPreset.veryHigh;
+    switch (_settingsProvider.settings.videoResolution) {
+      case 'high':
+        return ResolutionPreset.high;
+      case 'ultraHigh':
+        return ResolutionPreset.ultraHigh;
+      default:
+        return ResolutionPreset.veryHigh;
     }
   }
 
   Future<void> _initCamera() async {
-    final settings = _provider.settings;
+    final settings = _settingsProvider.settings;
     if (settings.keepScreenOn) WakelockPlus.enable();
 
     if (!settings.showCamera) {
@@ -179,6 +184,7 @@ class _PrompterScreenState extends State<PrompterScreen>
     await Permission.microphone.request();
 
     if (!camPerm.isGranted) {
+      Log.w('Prompter', 'camera permission refused');
       if (mounted) setState(() => _cameraReady = true);
       _startCountdown();
       return;
@@ -187,6 +193,7 @@ class _PrompterScreenState extends State<PrompterScreen>
     try {
       _cameras = await availableCameras();
       if (_cameras.isEmpty) {
+        Log.w('Prompter', 'no cameras available');
         if (mounted) setState(() => _cameraReady = true);
         _startCountdown();
         return;
@@ -209,7 +216,8 @@ class _PrompterScreenState extends State<PrompterScreen>
         setState(() => _cameraReady = true);
         _startCountdown();
       }
-    } catch (_) {
+    } catch (e, st) {
+      Log.e('Prompter', 'camera init failed', e, st);
       if (mounted) {
         setState(() => _cameraReady = true);
         _startCountdown();
@@ -230,26 +238,32 @@ class _PrompterScreenState extends State<PrompterScreen>
     if (_isRecording) await _stopRecording();
 
     await _stopImageStream();
-    _provider.switchCamera();
+    _settingsProvider.switchCamera();
     await _cam!.dispose();
 
-    final desc = _pickCamera(_provider.settings.useFrontCamera);
+    final desc = _pickCamera(_settingsProvider.settings.useFrontCamera);
     _sensorRotation = desc.sensorOrientation;
     _cam = CameraController(desc, _resolutionPreset(), enableAudio: true);
-    await _cam!.initialize();
-
-    _minZoom = await _cam!.getMinZoomLevel();
-    _maxZoom = await _cam!.getMaxZoomLevel();
-
-    _startImageStream();
+    try {
+      await _cam!.initialize();
+      _minZoom = await _cam!.getMinZoomLevel();
+      _maxZoom = await _cam!.getMaxZoomLevel();
+      _startImageStream();
+    } catch (e, st) {
+      Log.e('Prompter', 'switch camera failed', e, st);
+    }
 
     if (mounted) {
-      setState(() { _currentZoom = 1.0; _currentExp = 0.0; });
+      setState(() {
+        _currentZoom = 1.0;
+        _currentExp = 0.0;
+        _aeLocked = false;
+      });
       if (wasPlaying) _startScrolling();
     }
   }
 
-  // ── MJPEG stream ─────────────────────────────────────────────────────────
+  // ── MJPEG ──────────────────────────────────────────────────────────────────
 
   void _startImageStream() {
     if (_cam == null || !_cam!.value.isInitialized) return;
@@ -257,7 +271,7 @@ class _PrompterScreenState extends State<PrompterScreen>
 
     try {
       _cam!.startImageStream((CameraImage frame) {
-        if (_mjpegClients.isEmpty || _isConvertingFrame) return;
+        if (!_wifi.hasMjpegClients || _isConvertingFrame) return;
         if (frame.planes.length < 3) return;
 
         _isConvertingFrame = true;
@@ -274,13 +288,16 @@ class _PrompterScreenState extends State<PrompterScreen>
         );
 
         compute(_convertYuvToJpeg, params).then((jpeg) {
-          _sendMjpegFrame(jpeg);
+          _wifi.sendMjpegFrame(jpeg);
           _isConvertingFrame = false;
-        }).catchError((_) {
+        }).catchError((e) {
+          Log.w('Prompter', 'jpeg convert error: $e');
           _isConvertingFrame = false;
         });
       });
-    } catch (_) {}
+    } catch (e, st) {
+      Log.e('Prompter', 'startImageStream failed', e, st);
+    }
   }
 
   Future<void> _stopImageStream() async {
@@ -288,25 +305,60 @@ class _PrompterScreenState extends State<PrompterScreen>
       if (_cam != null && _cam!.value.isStreamingImages) {
         await _cam!.stopImageStream();
       }
-    } catch (_) {}
-  }
-
-  void _sendMjpegFrame(Uint8List jpeg) {
-    if (_mjpegClients.isEmpty) return;
-    final header =
-        '--mjpeg\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpeg.length}\r\n\r\n';
-    for (final client in List.of(_mjpegClients)) {
-      try {
-        client.write(header);
-        client.add(jpeg);
-        client.write('\r\n');
-      } catch (_) {
-        _mjpegClients.remove(client);
-      }
+    } catch (e) {
+      Log.w('Prompter', 'stopImageStream error: $e');
     }
   }
 
-  // ── Zoom & Exposition ────────────────────────────────────────────────────
+  // ── Tap-to-focus / tap-to-expose ───────────────────────────────────────────
+
+  Future<void> _focusAtPoint(Offset localPos, Size widgetSize) async {
+    if (_cam == null || !_cam!.value.isInitialized) return;
+    final nx = (localPos.dx / widgetSize.width).clamp(0.0, 1.0);
+    final ny = (localPos.dy / widgetSize.height).clamp(0.0, 1.0);
+    final point = Offset(nx, ny);
+    try {
+      await _cam!.setFocusMode(FocusMode.auto);
+      await _cam!.setExposureMode(ExposureMode.auto);
+      await _cam!.setFocusPoint(point);
+      await _cam!.setExposurePoint(point);
+      _aeLocked = false;
+      Log.d('Prompter', 'focus @ ${nx.toStringAsFixed(2)}, ${ny.toStringAsFixed(2)}');
+    } catch (e) {
+      Log.w('Prompter', 'focus failed: $e');
+    }
+    if (!mounted) return;
+    setState(() => _focusReticle = localPos);
+    _focusReticleTimer?.cancel();
+    _focusReticleTimer = Timer(const Duration(milliseconds: 1100), () {
+      if (mounted) setState(() => _focusReticle = null);
+    });
+  }
+
+  Future<void> _toggleAeLock() async {
+    if (_cam == null || !_cam!.value.isInitialized) return;
+    try {
+      final mode = _aeLocked ? ExposureMode.auto : ExposureMode.locked;
+      await _cam!.setExposureMode(mode);
+      setState(() => _aeLocked = !_aeLocked);
+      HapticFeedback.lightImpact();
+      _showHint(_aeLocked ? 'Expo verrouillée' : 'Expo automatique');
+    } catch (e) {
+      Log.w('Prompter', 'AE lock failed: $e');
+    }
+  }
+
+  String? _hintMessage;
+  Timer? _hintTimer;
+  void _showHint(String msg) {
+    setState(() => _hintMessage = msg);
+    _hintTimer?.cancel();
+    _hintTimer = Timer(const Duration(milliseconds: 1400), () {
+      if (mounted) setState(() => _hintMessage = null);
+    });
+  }
+
+  // ── Zoom & Exposition ──────────────────────────────────────────────────────
 
   void _onScaleStart(ScaleStartDetails d) {
     _baseZoom = _currentZoom;
@@ -317,7 +369,9 @@ class _PrompterScreenState extends State<PrompterScreen>
     if (_cam == null || d.pointerCount < 2) return;
     final zoom = (_baseZoom * d.scale).clamp(_minZoom, _maxZoom);
     setState(() => _currentZoom = zoom);
-    await _cam!.setZoomLevel(zoom);
+    try {
+      await _cam!.setZoomLevel(zoom);
+    } catch (_) {}
   }
 
   void _onScaleEnd(ScaleEndDetails _) {
@@ -326,29 +380,44 @@ class _PrompterScreenState extends State<PrompterScreen>
 
   Future<void> _setExposure(double v) async {
     setState(() => _currentExp = v);
-    await _cam?.setExposureOffset(v);
+    try {
+      await _cam?.setExposureOffset(v);
+    } catch (_) {}
   }
 
-  // ── Compte à rebours ─────────────────────────────────────────────────────
+  // ── Compte à rebours ───────────────────────────────────────────────────────
 
   void _startCountdown() {
-    final secs = _provider.settings.countdownSeconds;
-    if (secs == 0) { _startScrolling(); return; }
-    setState(() { _isCountingDown = true; _countdownValue = secs; });
-    Future.doWhile(() async {
-      await Future.delayed(const Duration(seconds: 1));
-      if (!mounted) return false;
+    final secs = _settingsProvider.settings.countdownSeconds;
+    if (secs <= 0) {
+      _startScrolling();
+      return;
+    }
+    setState(() {
+      _isCountingDown = true;
+      _countdownValue = secs;
+    });
+    _countdownTimer?.cancel();
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) {
+        t.cancel();
+        return;
+      }
       setState(() => _countdownValue--);
       if (_countdownValue <= 0) {
+        t.cancel();
         setState(() => _isCountingDown = false);
         _startScrolling();
-        return false;
       }
-      return true;
     });
   }
 
-  // ── Défilement ───────────────────────────────────────────────────────────
+  void _cancelCountdown() {
+    _countdownTimer?.cancel();
+    if (mounted && _isCountingDown) setState(() => _isCountingDown = false);
+  }
+
+  // ── Défilement ─────────────────────────────────────────────────────────────
 
   void _startScrolling() {
     if (!mounted) return;
@@ -358,10 +427,14 @@ class _PrompterScreenState extends State<PrompterScreen>
     _ticker = createTicker((elapsed) {
       if (!_scroll.hasClients) return;
       final now = elapsed.inMicroseconds.toDouble();
-      if (_lastTickUs < 0) { _lastTickUs = now; return; }
+      if (_lastTickUs < 0) {
+        _lastTickUs = now;
+        return;
+      }
       final delta = (now - _lastTickUs) / 1000000.0;
       _lastTickUs = now;
-      final next = _scroll.offset + _provider.settings.scrollSpeed * delta;
+      final next =
+          _scroll.offset + _settingsProvider.settings.scrollSpeed * delta;
       if (next >= _scroll.position.maxScrollExtent) {
         _scroll.jumpTo(_scroll.position.maxScrollExtent);
         _ticker?.stop();
@@ -369,7 +442,8 @@ class _PrompterScreenState extends State<PrompterScreen>
       } else {
         _scroll.jumpTo(next);
       }
-    })..start();
+    })
+      ..start();
   }
 
   void _pauseScrolling() {
@@ -384,21 +458,28 @@ class _PrompterScreenState extends State<PrompterScreen>
   }
 
   void _adjustSpeed(double delta) {
-    final s = (_provider.settings.scrollSpeed + delta).clamp(20.0, 300.0);
-    _provider.updateScrollSpeed(s);
+    final s =
+        (_settingsProvider.settings.scrollSpeed + delta).clamp(20.0, 300.0);
+    _settingsProvider.updateScrollSpeed(s);
     _broadcastStatus();
   }
 
   void _rewind(double seconds) {
     if (!_scroll.hasClients) return;
     final target =
-        (_scroll.offset - _provider.settings.scrollSpeed * seconds)
+        (_scroll.offset - _settingsProvider.settings.scrollSpeed * seconds)
             .clamp(0.0, _scroll.position.maxScrollExtent);
     _scroll.jumpTo(target);
     _broadcastStatus();
   }
 
-  // ── Enregistrement ───────────────────────────────────────────────────────
+  void _resetScroll() {
+    _pauseScrolling();
+    if (_scroll.hasClients) _scroll.jumpTo(0);
+    _broadcastStatus();
+  }
+
+  // ── Enregistrement ─────────────────────────────────────────────────────────
 
   Future<void> _toggleRecording() async {
     _isRecording ? await _stopRecording() : await _startRecording();
@@ -410,15 +491,27 @@ class _PrompterScreenState extends State<PrompterScreen>
       await _stopImageStream();
       await _cam!.startVideoRecording();
       _recTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) setState(() => _recDuration += const Duration(seconds: 1));
-        _broadcastStatus();
+        if (mounted) {
+          setState(() => _recDuration += const Duration(seconds: 1));
+          _broadcastStatus();
+        }
       });
-      if (mounted) setState(() { _isRecording = true; _recDuration = Duration.zero; });
+      if (mounted) {
+        setState(() {
+          _isRecording = true;
+          _recDuration = Duration.zero;
+        });
+      }
       _broadcastStatus();
-    } catch (e) {
+      HapticFeedback.mediumImpact();
+    } catch (e, st) {
+      Log.e('Prompter', 'start recording failed', e, st);
       _startImageStream();
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Erreur: $e'), backgroundColor: Colors.red));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Erreur: $e'), backgroundColor: Colors.red),
+        );
+      }
     }
   }
 
@@ -431,7 +524,9 @@ class _PrompterScreenState extends State<PrompterScreen>
       _broadcastStatus();
       _startImageStream();
       await _saveToGallery(file.path);
-    } catch (_) {
+      HapticFeedback.mediumImpact();
+    } catch (e, st) {
+      Log.e('Prompter', 'stop recording failed', e, st);
       if (mounted) setState(() => _isRecording = false);
       _startImageStream();
     }
@@ -441,14 +536,23 @@ class _PrompterScreenState extends State<PrompterScreen>
     try {
       if (!await Gal.hasAccess()) await Gal.requestAccess();
       await Gal.putVideo(path);
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-              content: Text('Vidéo sauvegardée dans la Galerie ✓'),
-              backgroundColor: Colors.green));
-    } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Erreur sauvegarde: $e'),
-              backgroundColor: Colors.orange));
+            content: Text('Vidéo sauvegardée dans la Galerie ✓'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e, st) {
+      Log.e('Prompter', 'save to gallery failed', e, st);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text('Erreur sauvegarde: $e'),
+              backgroundColor: Colors.orange),
+        );
+      }
     }
   }
 
@@ -459,386 +563,257 @@ class _PrompterScreenState extends State<PrompterScreen>
     return '$h:$m:$s';
   }
 
-  // ── Serveur WiFi ─────────────────────────────────────────────────────────
+  // ── Serveur WiFi ───────────────────────────────────────────────────────────
 
-  Future<void> _startWifiServer() async {
-    try {
-      final interfaces =
-          await NetworkInterface.list(type: InternetAddressType.IPv4);
-      for (final iface in interfaces) {
-        for (final addr in iface.addresses) {
-          if (!addr.isLoopback) {
-            if (mounted) setState(() => _serverIp = addr.address);
-            break;
-          }
-        }
-        if (_serverIp.isNotEmpty) break;
-      }
-
-      _server = await HttpServer.bind(InternetAddress.anyIPv4, _port);
-      _server!.listen((req) async {
-        // WebSocket
-        if (WebSocketTransformer.isUpgradeRequest(req)) {
-          final ws = await WebSocketTransformer.upgrade(req);
-          _wsClients.add(ws);
-          _broadcastStatus();
-          // Envoyer le script actuel au nouveau client
-          try { ws.add('script:${_provider.script}'); } catch (_) {}
-          ws.listen(
-            (data) => _handleWsMessage(data.toString()),
-            onDone: () => _wsClients.remove(ws),
-            onError: (_) => _wsClients.remove(ws),
-            cancelOnError: true,
-          );
-          return;
-        }
-
-        // Stream MJPEG
-        if (req.uri.path == '/stream') {
-          final resp = req.response;
-          resp.headers.set(HttpHeaders.contentTypeHeader,
-              'multipart/x-mixed-replace; boundary=mjpeg');
-          resp.headers.set('Cache-Control', 'no-cache');
-          resp.headers.set('Connection', 'keep-alive');
-          resp.statusCode = 200;
-          _mjpegClients.add(resp);
-          resp.done.catchError((_) => _mjpegClients.remove(resp));
-          return; // ne pas fermer la réponse
-        }
-
-        // Page de contrôle HTML
-        req.response
-          ..statusCode = 200
-          ..headers.contentType = ContentType.html
-          ..write(_controlPageHtml())
-          ..close();
-      });
-    } catch (_) {}
+  Future<void> _startWifi() async {
+    _wifi.scriptProvider = () =>
+        _scriptsProvider.findById(widget.scriptId)?.content ?? '';
+    await _wifi.start();
+    _wsSub = _wifi.onWsMessage.listen(_handleWsMessage);
   }
 
   void _handleWsMessage(String raw) {
-    // Script synchronisé depuis le PC
     if (raw.startsWith('script:')) {
       final text = raw.substring(7);
-      _provider.updateScript(text);
-      // Revenir au début si le script change
-      if (_scroll.hasClients) _scroll.jumpTo(0);
-      if (_isPlaying) _pauseScrolling();
+      _scriptsProvider.update(widget.scriptId, content: text).then((_) {
+        if (_scroll.hasClients) _scroll.jumpTo(0);
+        if (_isPlaying) _pauseScrolling();
+      });
       return;
     }
+    if (raw == 'ping') return;
     switch (raw) {
       case 'toggle': _togglePlay(); break;
-      case 'pause': _pauseScrolling(); break;
-      case 'play': if (!_isCountingDown) _startScrolling(); break;
+      case 'pause':  _pauseScrolling(); break;
+      case 'play':   if (!_isCountingDown) _startScrolling(); break;
       case 'rewind2': _rewind(2.0); break;
-      case 'home':
-        _pauseScrolling();
-        if (_scroll.hasClients) _scroll.jumpTo(0);
-        break;
+      case 'home':   _resetScroll(); break;
       case 'speed+': _adjustSpeed(10); break;
       case 'speed-': _adjustSpeed(-10); break;
-      case 'rec': _toggleRecording(); break;
+      case 'rec':    _toggleRecording(); break;
     }
     _broadcastStatus();
   }
 
   void _broadcastStatus() {
-    if (_wsClients.isEmpty) return;
+    if (!_wifi.running) return;
     double progress = 0;
     if (_scroll.hasClients && _scroll.position.maxScrollExtent > 0) {
       progress = _scroll.offset / _scroll.position.maxScrollExtent;
     }
-    final msg = jsonEncode({
+    _wifi.broadcastStatus({
       'playing': _isPlaying,
-      'speed': _provider.settings.scrollSpeed.round(),
+      'speed': _settingsProvider.settings.scrollSpeed.round(),
       'progress': (progress * 100).round(),
       'recording': _isRecording,
       'duration': _fmtDuration(_recDuration),
     });
-    for (final ws in List.of(_wsClients)) {
-      try { ws.add(msg); } catch (_) { _wsClients.remove(ws); }
-    }
   }
 
-  String _controlPageHtml() => '''<!DOCTYPE html>
-<html lang="fr">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<title>Prompteur - Telecommande</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:#1A1A2E;color:#fff;font-family:-apple-system,sans-serif;
-  min-height:100vh;display:flex;flex-direction:column;align-items:center;
-  padding:16px;gap:12px;-webkit-tap-highlight-color:transparent}
-h1{font-size:18px;color:#6C63FF}
-#st{font-size:12px;color:#666}
-.preview-wrap{position:relative;width:180px;height:320px;
-  background:#0a0a14;border-radius:10px;overflow:hidden;
-  border:1px solid #2a2a4a;flex-shrink:0}
-#stream-img{width:100%;height:100%;object-fit:cover;display:block}
-#rec-overlay{position:absolute;inset:0;background:rgba(0,0,0,.75);
-  display:none;align-items:center;justify-content:center;
-  color:#ff4444;font-weight:bold;font-size:14px;text-align:center;padding:10px}
-.info{display:flex;justify-content:space-between;width:100%;max-width:440px;
-  font-size:13px;color:#888}
-.info b{color:#fff}
-.pb{width:100%;max-width:440px;background:#16213E;border-radius:99px;height:6px}
-.pf{height:6px;background:#6C63FF;border-radius:99px;width:0%;transition:width .5s}
-.g{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;width:100%;max-width:440px}
-.b{background:#16213E;border:1.5px solid #2a2a4a;border-radius:12px;
-  color:#fff;padding:16px 8px;font-size:13px;cursor:pointer;
-  display:flex;flex-direction:column;align-items:center;gap:5px;
-  transition:background .1s,transform .1s;user-select:none}
-.b:hover{background:#6C63FF;border-color:#6C63FF}
-.b:active{transform:scale(.94)}
-.b .i{font-size:24px}
-.full{grid-column:1/-1}
-.rec{border-color:#ff4444}
-.rec:hover,.rec.on{background:#cc0000;border-color:#ff4444}
-.kbd{color:#444;font-size:11px;text-align:center;line-height:2.2;max-width:440px}
-kbd{background:#16213E;padding:2px 7px;border-radius:5px;
-  color:#888;border:1px solid #333;font-size:11px}
-.script-section{width:100%;max-width:440px;margin-top:8px}
-.script-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
-.script-label{color:#6C63FF;font-size:11px;font-weight:bold;letter-spacing:1.5px}
-.script-sync{color:#444;font-size:11px}
-.script-sync.ok{color:#4CAF50}
-textarea#script-area{width:100%;height:200px;background:#16213E;color:#fff;
-  border:1.5px solid #2a2a4a;border-radius:12px;padding:12px;font-size:14px;
-  resize:vertical;line-height:1.6;font-family:-apple-system,sans-serif;
-  outline:none;transition:border-color .2s}
-textarea#script-area:focus{border-color:#6C63FF}
-</style>
-</head>
-<body>
-<h1>Prompteur - Telecommande</h1>
-<div id="st">Connexion...</div>
-<div class="preview-wrap">
-  <img id="stream-img" src="/stream" alt="Apercu camera">
-  <div id="rec-overlay">&#9210; Enregistrement<br>en cours</div>
-</div>
-<div class="info">
-  <span>Progression: <b id="pct">0%</b></span>
-  <span>Vitesse: <b id="spd">-</b></span>
-  <span id="dur"></span>
-</div>
-<div class="pb"><div class="pf" id="prog"></div></div>
-<div class="g">
-  <button class="b" onclick="s('rewind2')"><span class="i">&#8249;&#8249;</span>-2s</button>
-  <button class="b" id="bp" onclick="s('toggle')"><span class="i" id="ip">&#9646;&#9646;</span><span id="lp">PAUSE</span></button>
-  <button class="b" onclick="s('home')"><span class="i">&#9198;</span>DEBUT</button>
-  <button class="b" onclick="s('speed-')"><span class="i">&#128022;</span>LENT</button>
-  <button class="b" onclick="s('speed+')"><span class="i">&#128007;</span>VITE</button>
-  <button class="b" onclick="s('rewind2')"><span class="i">&#8617;</span>RETOUR</button>
-  <button class="b rec full" id="br" onclick="s('rec')">
-    <span class="i" id="ir">&#9210;</span>
-    <span id="lr">DEMARRER ENREGISTREMENT</span>
-  </button>
-</div>
-<div class="kbd">
-  <kbd>Espace</kbd> Pause/Play &nbsp;
-  <kbd>&larr;</kbd> -2s &nbsp;
-  <kbd>&uarr;</kbd> + Vite &nbsp;
-  <kbd>&darr;</kbd> - Lent &nbsp;
-  <kbd>Home</kbd> Debut &nbsp;
-  <kbd>R</kbd> Enregistrement
-</div>
-<div class="script-section">
-  <div class="script-header">
-    <span class="script-label">SCRIPT</span>
-    <span class="script-sync" id="sync-st">En attente...</span>
-  </div>
-  <textarea id="script-area" placeholder="Collez votre script ici (depuis Google Sheets, Docs, etc.)&#10;&#10;Le texte s'envoie automatiquement sur le t&#233;l&#233;phone d&#232;s que vous arr&#234;tez de taper."></textarea>
-</div>
-<script>
-var ws=new WebSocket('ws://'+location.host+'/ws');
-ws.onopen=function(){document.getElementById('st').innerHTML='<span style="color:#4CAF50">&#9679;</span> Connecte';};
-ws.onclose=function(){document.getElementById('st').innerHTML='<span style="color:#f44">&#9679;</span> Deconnecte';};
-ws.onmessage=function(e){
-  // Script recu depuis le telephone
-  if(e.data.startsWith('script:')){
-    var ta=document.getElementById('script-area');
-    var txt=e.data.substring(7);
-    if(ta.value!==txt) ta.value=txt;
-    setSyncOk();
-    return;
-  }
-  var d=JSON.parse(e.data);
-  document.getElementById('ip').innerHTML=d.playing?'&#9646;&#9646;':'&#9654;';
-  document.getElementById('lp').textContent=d.playing?'PAUSE':'REPRENDRE';
-  document.getElementById('spd').textContent=d.speed;
-  document.getElementById('pct').textContent=d.progress+'%';
-  document.getElementById('prog').style.width=d.progress+'%';
-  document.getElementById('ir').innerHTML=d.recording?'&#9209;':'&#9210;';
-  document.getElementById('lr').textContent=d.recording?'STOP - '+d.duration:'DEMARRER ENREGISTREMENT';
-  var ro=document.getElementById('rec-overlay');
-  var si=document.getElementById('stream-img');
-  if(d.recording){
-    ro.style.display='flex';
-  } else {
-    if(ro.style.display==='flex'){
-      si.src='/stream?t='+Date.now();
-    }
-    ro.style.display='none';
-  }
-  if(d.recording){document.getElementById('br').classList.add('on');}
-  else{document.getElementById('br').classList.remove('on');}
-};
-function s(cmd){if(ws.readyState===1)ws.send(cmd);}
-// Sync script PC → telephone (debounce 500ms)
-var scriptTimer;
-var syncEl=document.getElementById('sync-st');
-function setSyncOk(){syncEl.textContent='Synchronise ✓';syncEl.className='script-sync ok';}
-document.getElementById('script-area').addEventListener('input',function(e){
-  clearTimeout(scriptTimer);
-  syncEl.textContent='En cours...';syncEl.className='script-sync';
-  scriptTimer=setTimeout(function(){
-    if(ws.readyState===1){
-      ws.send('script:'+document.getElementById('script-area').value);
-      setSyncOk();
-    }
-  },500);
-});
-document.addEventListener('keydown',function(e){
-  if(document.activeElement===document.getElementById('script-area')) return;
-  switch(e.code){
-    case 'Space':e.preventDefault();s('toggle');break;
-    case 'ArrowLeft':e.preventDefault();s('rewind2');break;
-    case 'ArrowUp':e.preventDefault();s('speed+');break;
-    case 'ArrowDown':e.preventDefault();s('speed-');break;
-    case 'Home':e.preventDefault();s('home');break;
-    case 'KeyR':s('rec');break;
-  }
-});
-</script>
-</body>
-</html>''';
-
-  // ── Build ────────────────────────────────────────────────────────────────
+  // ── Build ──────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<SettingsProvider>().settings;
-    final script = context.watch<SettingsProvider>().script;
+    final script =
+        context.watch<ScriptsProvider>().findById(widget.scriptId);
+    final content = script?.content ?? '';
 
     return Scaffold(
       backgroundColor: Colors.black,
-      body: GestureDetector(
-        onTap: () => setState(() => _showControls = !_showControls),
-        onScaleStart: _onScaleStart,
-        onScaleUpdate: _onScaleUpdate,
-        onScaleEnd: _onScaleEnd,
-        child: Stack(children: [
-          // ── Fond caméra (sans distorsion) ─────────────────────
-          if (_cameraReady &&
-              _cam != null &&
-              _cam!.value.isInitialized &&
-              settings.showCamera)
-            Positioned.fill(
-              child: ClipRect(
-                child: Transform(
-                  alignment: Alignment.center,
-                  transform: Matrix4.identity()
-                    ..scale(settings.mirrorMode ? -1.0 : 1.0, 1.0),
-                  child: FittedBox(
-                    fit: BoxFit.cover,
-                    child: SizedBox(
-                      // Les dimensions du capteur sont en paysage → on les inverse
-                      // pour afficher en portrait sans distorsion
-                      width: _cam!.value.previewSize?.height ?? 1920,
-                      height: _cam!.value.previewSize?.width ?? 1080,
-                      child: CameraPreview(_cam!),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final size = Size(constraints.maxWidth, constraints.maxHeight);
+          return GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => setState(() => _showControls = !_showControls),
+            onDoubleTapDown: (d) => _focusAtPoint(d.localPosition, size),
+            onDoubleTap: () {}, // reserved to make double-tap detector active
+            onLongPress: _toggleAeLock,
+            onScaleStart: _onScaleStart,
+            onScaleUpdate: _onScaleUpdate,
+            onScaleEnd: _onScaleEnd,
+            child: Stack(
+              children: [
+                // ── Fond caméra (sans distorsion)
+                if (_cameraReady &&
+                    _cam != null &&
+                    _cam!.value.isInitialized &&
+                    settings.showCamera)
+                  Positioned.fill(
+                    child: ClipRect(
+                      child: Transform(
+                        alignment: Alignment.center,
+                        transform: Matrix4.identity()
+                          ..scale(settings.mirrorMode ? -1.0 : 1.0, 1.0),
+                        child: FittedBox(
+                          fit: BoxFit.cover,
+                          child: SizedBox(
+                            width: _cam!.value.previewSize?.height ?? 1920,
+                            height: _cam!.value.previewSize?.width ?? 1080,
+                            child: CameraPreview(_cam!),
+                          ),
+                        ),
+                      ),
                     ),
                   ),
-                ),
-              ),
+
+                // ── Masque focus haut/bas
+                if (_cameraReady &&
+                    settings.focusMaskOpacity > 0 &&
+                    !_hideTextForZoom)
+                  IgnorePointer(
+                    child: _FocusMask(opacity: settings.focusMaskOpacity),
+                  ),
+
+                // ── Texte défilant
+                if (_cameraReady && !_hideTextForZoom)
+                  _buildTextOverlay(settings, content, size),
+
+                // ── Ligne de lecture
+                if (_cameraReady && settings.showReadingLine && !_hideTextForZoom)
+                  IgnorePointer(child: _ReadingLine(top: size.height / 3)),
+
+                // ── Safe-zone TikTok / Reels
+                if (_cameraReady && settings.showSafeZone && !_hideTextForZoom)
+                  IgnorePointer(child: _SafeZoneOverlay(size: size)),
+
+                // ── Reticle focus
+                if (_focusReticle != null)
+                  IgnorePointer(
+                    child: _FocusReticle(position: _focusReticle!),
+                  ),
+
+                // ── Indicateur AE lock
+                if (_aeLocked && !_hideTextForZoom)
+                  Positioned(
+                    top: MediaQuery.of(context).padding.top + 12,
+                    right: 16,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withOpacity(0.85),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(Icons.lock, size: 11, color: Colors.black),
+                        SizedBox(width: 4),
+                        Text('AE',
+                            style: TextStyle(
+                                color: Colors.black,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold)),
+                      ]),
+                    ),
+                  ),
+
+                // ── Hint / message éphémère
+                if (_hintMessage != null)
+                  Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.7),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(_hintMessage!,
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 14)),
+                    ),
+                  ),
+
+                // ── Indicateur zoom
+                if (_hideTextForZoom)
+                  Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 8),
+                      decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.6),
+                          borderRadius: BorderRadius.circular(20)),
+                      child: Text('x${_currentZoom.toStringAsFixed(1)}',
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 28,
+                              fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+
+                // ── Chargement
+                if (!_cameraReady)
+                  const Center(
+                      child: CircularProgressIndicator(
+                          color: Color(0xFF6C63FF))),
+
+                // ── REC indicator
+                if (_isRecording)
+                  Positioned(
+                    top: MediaQuery.of(context).padding.top + 12,
+                    left: 16,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                          color: Colors.red,
+                          borderRadius: BorderRadius.circular(8)),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        const Icon(Icons.fiber_manual_record,
+                            color: Colors.white, size: 10),
+                        const SizedBox(width: 5),
+                        Text(_fmtDuration(_recDuration),
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                                fontFamily: 'monospace')),
+                      ]),
+                    ),
+                  ),
+
+                // ── Compte à rebours
+                if (_isCountingDown)
+                  Center(
+                    child: GestureDetector(
+                      onTap: _cancelCountdown,
+                      child: Container(
+                        width: 140,
+                        height: 140,
+                        decoration: BoxDecoration(
+                            color: Colors.black.withOpacity(0.78),
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                                color: const Color(0xFF6C63FF), width: 3)),
+                        child: Center(
+                          child: Text('$_countdownValue',
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 76,
+                                  fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // ── Contrôles
+                if (_showControls && !_isCountingDown) _buildControls(settings),
+              ],
             ),
-
-          // ── Texte défilant ────────────────────────────────────
-          if (_cameraReady && !_hideTextForZoom)
-            _buildTextOverlay(settings, script),
-
-          // ── Chargement ────────────────────────────────────────
-          if (!_cameraReady)
-            const Center(
-                child: CircularProgressIndicator(color: Color(0xFF6C63FF))),
-
-          // ── Indicateur zoom ───────────────────────────────────
-          if (_hideTextForZoom)
-            Center(
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.6),
-                    borderRadius: BorderRadius.circular(20)),
-                child: Text('x${_currentZoom.toStringAsFixed(1)}',
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 28,
-                        fontWeight: FontWeight.bold)),
-              ),
-            ),
-
-          // ── Indicateur REC (toujours visible) ─────────────────
-          if (_isRecording)
-            Positioned(
-              top: MediaQuery.of(context).padding.top + 12,
-              left: 16,
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                    color: Colors.red,
-                    borderRadius: BorderRadius.circular(8)),
-                child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  const Icon(Icons.fiber_manual_record,
-                      color: Colors.white, size: 10),
-                  const SizedBox(width: 5),
-                  Text(_fmtDuration(_recDuration),
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                          fontWeight: FontWeight.bold,
-                          fontFamily: 'monospace')),
-                ]),
-              ),
-            ),
-
-          // ── Compte à rebours ──────────────────────────────────
-          if (_isCountingDown)
-            Center(
-              child: Container(
-                width: 120, height: 120,
-                decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.75),
-                    shape: BoxShape.circle),
-                child: Center(
-                    child: Text('$_countdownValue',
-                        style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 72,
-                            fontWeight: FontWeight.bold))),
-              ),
-            ),
-
-          // ── Contrôles ─────────────────────────────────────────
-          if (_showControls && !_isCountingDown) _buildControls(settings),
-        ]),
+          );
+        },
       ),
     );
   }
 
-  Widget _buildTextOverlay(PrompterSettings settings, String script) {
-    final screenH = MediaQuery.of(context).size.height;
+  Widget _buildTextOverlay(PrompterSettings settings, String content, Size size) {
     return Positioned.fill(
       child: SingleChildScrollView(
         controller: _scroll,
         physics: const NeverScrollableScrollPhysics(),
         padding: EdgeInsets.symmetric(
           horizontal: settings.marginHorizontal,
-          vertical: screenH * 0.45,
+          vertical: size.height * 0.45,
         ),
         child: Transform(
           alignment: Alignment.center,
@@ -851,17 +826,21 @@ document.addEventListener('keydown',function(e){
                   .withOpacity(settings.backgroundOpacity),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Text(
-              script,
-              textAlign: settings.textAlign,
-              style: TextStyle(
-                color: settings.textColor,
-                fontSize: settings.fontSize,
-                height: settings.lineSpacing,
-                fontFamily: settings.fontFamily == 'Default'
-                    ? null
-                    : settings.fontFamily,
-                fontWeight: FontWeight.w500,
+            child: DefaultTextStyle.merge(
+              style: TextStyle(height: settings.lineSpacing),
+              child: Text.rich(
+                PrompterMarkdown.parse(
+                  content,
+                  textColor: settings.textColor,
+                  sectionColor: const Color(0xFFFFC857),
+                  commentColor: Colors.white38,
+                  fontSize: settings.fontSize,
+                  baseWeight: FontWeight.w500,
+                  fontFamily: settings.fontFamily == 'Default'
+                      ? null
+                      : settings.fontFamily,
+                ),
+                textAlign: settings.textAlign,
               ),
             ),
           ),
@@ -875,9 +854,11 @@ document.addEventListener('keydown',function(e){
     final botPad = MediaQuery.of(context).padding.bottom;
 
     return Stack(children: [
-      // ── Barre haute ───────────────────────────────────────────
+      // ── Barre haute
       Positioned(
-        top: 0, left: 0, right: 0,
+        top: 0,
+        left: 0,
+        right: 0,
         child: Container(
           padding: EdgeInsets.fromLTRB(4, topPad + 4, 4, 8),
           decoration: BoxDecoration(
@@ -892,27 +873,28 @@ document.addEventListener('keydown',function(e){
               icon: const Icon(Icons.arrow_back, color: Colors.white),
               onPressed: () => Navigator.pop(context),
             ),
-            if (_serverIp.isNotEmpty)
+            if (_wifi.ip.isNotEmpty)
               GestureDetector(
                 onTap: () {
-                  Clipboard.setData(
-                      ClipboardData(text: 'http://$_serverIp:$_port'));
+                  Clipboard.setData(ClipboardData(
+                      text: 'http://${_wifi.ip}:${WifiServer.port}'));
                   ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                       content: Text('Adresse copiée !'),
                       duration: Duration(seconds: 1)));
                 },
                 child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
                     color: Colors.black.withOpacity(0.5),
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: Colors.white24),
                   ),
                   child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    const Icon(Icons.wifi, color: Color(0xFF6C63FF), size: 13),
+                    const Icon(Icons.wifi,
+                        color: Color(0xFF6C63FF), size: 13),
                     const SizedBox(width: 4),
-                    Text('$_serverIp:$_port',
+                    Text('${_wifi.ip}:${WifiServer.port}',
                         style: const TextStyle(
                             color: Colors.white70, fontSize: 11)),
                   ]),
@@ -920,6 +902,16 @@ document.addEventListener('keydown',function(e){
               ),
             const Spacer(),
             IconButton(
+              tooltip: 'Safe-zone',
+              icon: Icon(Icons.crop_free,
+                  color: settings.showSafeZone
+                      ? const Color(0xFF6C63FF)
+                      : Colors.white),
+              onPressed: () =>
+                  context.read<SettingsProvider>().toggleSafeZone(),
+            ),
+            IconButton(
+              tooltip: 'Mode miroir',
               icon: Icon(Icons.flip,
                   color: settings.mirrorMode
                       ? const Color(0xFF6C63FF)
@@ -929,11 +921,13 @@ document.addEventListener('keydown',function(e){
             ),
             if (_cameras.length >= 2)
               IconButton(
+                tooltip: 'Changer de caméra',
                 icon: const Icon(Icons.flip_camera_android,
                     color: Colors.white),
                 onPressed: _switchCamera,
               ),
             IconButton(
+              tooltip: 'Caméra',
               icon: Icon(
                 settings.showCamera ? Icons.videocam : Icons.videocam_off,
                 color: settings.showCamera ? Colors.white : Colors.red,
@@ -945,7 +939,7 @@ document.addEventListener('keydown',function(e){
         ),
       ),
 
-      // ── Slider exposition (droite) ────────────────────────────
+      // ── Slider exposition (droite)
       if (_cam != null && _cam!.value.isInitialized)
         Positioned(
           right: 10,
@@ -979,9 +973,11 @@ document.addEventListener('keydown',function(e){
           ]),
         ),
 
-      // ── Barre basse ───────────────────────────────────────────
+      // ── Barre basse
       Positioned(
-        bottom: 0, left: 0, right: 0,
+        bottom: 0,
+        left: 0,
+        right: 0,
         child: Container(
           padding: EdgeInsets.fromLTRB(16, 12, 16, botPad + 16),
           decoration: BoxDecoration(
@@ -1000,7 +996,8 @@ document.addEventListener('keydown',function(e){
             GestureDetector(
               onTap: _togglePlay,
               child: Container(
-                width: 62, height: 62,
+                width: 62,
+                height: 62,
                 decoration: const BoxDecoration(
                     color: Color(0xFF6C63FF), shape: BoxShape.circle),
                 child: Icon(_isPlaying ? Icons.pause : Icons.play_arrow,
@@ -1016,17 +1013,14 @@ document.addEventListener('keydown',function(e){
             _CtrlBtn(
               icon: Icons.vertical_align_top,
               label: 'Début',
-              onTap: () {
-                _pauseScrolling();
-                if (_scroll.hasClients) _scroll.jumpTo(0);
-                _broadcastStatus();
-              },
+              onTap: _resetScroll,
             ),
             const SizedBox(width: 12),
             GestureDetector(
               onTap: _toggleRecording,
               child: Container(
-                width: 52, height: 52,
+                width: 52,
+                height: 52,
                 decoration: BoxDecoration(
                   color: _isRecording
                       ? Colors.red
@@ -1036,9 +1030,7 @@ document.addEventListener('keydown',function(e){
                       color: Colors.red, width: _isRecording ? 0 : 2),
                 ),
                 child: Icon(
-                    _isRecording
-                        ? Icons.stop
-                        : Icons.fiber_manual_record,
+                    _isRecording ? Icons.stop : Icons.fiber_manual_record,
                     color: Colors.white,
                     size: _isRecording ? 28 : 22),
               ),
@@ -1050,20 +1042,20 @@ document.addEventListener('keydown',function(e){
   }
 }
 
+// ── Widgets locaux ───────────────────────────────────────────────────────────
+
 class _CtrlBtn extends StatelessWidget {
   final IconData icon;
   final String label;
   final VoidCallback onTap;
-
-  const _CtrlBtn(
-      {required this.icon, required this.label, required this.onTap});
-
+  const _CtrlBtn({required this.icon, required this.label, required this.onTap});
   @override
   Widget build(BuildContext context) => GestureDetector(
         onTap: onTap,
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Container(
-            width: 44, height: 44,
+            width: 44,
+            height: 44,
             decoration: BoxDecoration(
               color: Colors.black.withOpacity(0.5),
               shape: BoxShape.circle,
@@ -1076,4 +1068,248 @@ class _CtrlBtn extends StatelessWidget {
               style: const TextStyle(color: Colors.white60, fontSize: 10)),
         ]),
       );
+}
+
+class _ReadingLine extends StatelessWidget {
+  final double top;
+  const _ReadingLine({required this.top});
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      top: top,
+      left: 0,
+      right: 0,
+      child: Row(
+        children: [
+          Container(
+            width: 22,
+            height: 3,
+            decoration: BoxDecoration(
+              color: const Color(0xFF6C63FF).withOpacity(0.85),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          Expanded(
+            child: Container(
+              height: 1.5,
+              color: const Color(0xFF6C63FF).withOpacity(0.35),
+            ),
+          ),
+          Container(
+            width: 22,
+            height: 3,
+            decoration: BoxDecoration(
+              color: const Color(0xFF6C63FF).withOpacity(0.85),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FocusMask extends StatelessWidget {
+  final double opacity;
+  const _FocusMask({required this.opacity});
+  @override
+  Widget build(BuildContext context) {
+    final dark = Colors.black.withOpacity(opacity);
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: Column(
+          children: [
+            Expanded(
+              flex: 1,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [dark, Colors.transparent],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 0),
+            Expanded(
+              flex: 2,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [Colors.transparent, dark],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SafeZoneOverlay extends StatelessWidget {
+  final Size size;
+  const _SafeZoneOverlay({required this.size});
+  @override
+  Widget build(BuildContext context) {
+    // TikTok / Reels safe zone (approximative en portrait 9:16) :
+    //   Top    : 8% (handle + username)
+    //   Bottom : 22% (caption + boutons + nav)
+    //   Right  : 14% (boutons d'actions)
+    final topInset = size.height * 0.08;
+    final bottomInset = size.height * 0.22;
+    final rightInset = size.width * 0.14;
+    return Positioned.fill(
+      child: CustomPaint(
+        painter: _SafeZonePainter(
+          topInset: topInset,
+          bottomInset: bottomInset,
+          rightInset: rightInset,
+        ),
+      ),
+    );
+  }
+}
+
+class _SafeZonePainter extends CustomPainter {
+  final double topInset, bottomInset, rightInset;
+  _SafeZonePainter(
+      {required this.topInset,
+      required this.bottomInset,
+      required this.rightInset});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.yellowAccent.withOpacity(0.55)
+      ..strokeWidth = 1.2
+      ..style = PaintingStyle.stroke;
+
+    final rect = Rect.fromLTRB(
+      4,
+      topInset,
+      size.width - rightInset,
+      size.height - bottomInset,
+    );
+    _drawDashedRect(canvas, rect, paint);
+
+    // Label
+    final tp = TextPainter(
+      text: const TextSpan(
+        text: 'SAFE ZONE',
+        style: TextStyle(
+          color: Colors.yellowAccent,
+          fontSize: 10,
+          fontWeight: FontWeight.bold,
+          letterSpacing: 1.5,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(canvas, Offset(rect.left + 4, rect.top + 3));
+  }
+
+  void _drawDashedRect(Canvas canvas, Rect r, Paint p) {
+    const dash = 6.0;
+    const gap = 5.0;
+    void line(Offset a, Offset b) {
+      final dx = b.dx - a.dx;
+      final dy = b.dy - a.dy;
+      final len = (dx == 0 ? dy.abs() : dx.abs());
+      double drawn = 0;
+      while (drawn < len) {
+        final t1 = drawn / len;
+        final t2 = ((drawn + dash) / len).clamp(0.0, 1.0);
+        canvas.drawLine(
+          Offset(a.dx + dx * t1, a.dy + dy * t1),
+          Offset(a.dx + dx * t2, a.dy + dy * t2),
+          p,
+        );
+        drawn += dash + gap;
+      }
+    }
+
+    line(r.topLeft, r.topRight);
+    line(r.topRight, r.bottomRight);
+    line(r.bottomRight, r.bottomLeft);
+    line(r.bottomLeft, r.topLeft);
+  }
+
+  @override
+  bool shouldRepaint(_SafeZonePainter old) =>
+      old.topInset != topInset ||
+      old.bottomInset != bottomInset ||
+      old.rightInset != rightInset;
+}
+
+class _FocusReticle extends StatefulWidget {
+  final Offset position;
+  const _FocusReticle({required this.position});
+  @override
+  State<_FocusReticle> createState() => _FocusReticleState();
+}
+
+class _FocusReticleState extends State<_FocusReticle>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 700),
+    )..forward();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (_, __) {
+        final t = _ctrl.value;
+        final scale = 1.6 - 0.6 * t; // 1.6 → 1.0
+        final opacity = (t < 0.6 ? 1.0 : (1.0 - (t - 0.6) / 0.4)).clamp(0.0, 1.0);
+        return Positioned(
+          left: widget.position.dx - 30,
+          top: widget.position.dy - 30,
+          child: Opacity(
+            opacity: opacity,
+            child: Transform.scale(
+              scale: scale,
+              child: Container(
+                width: 60,
+                height: 60,
+                decoration: BoxDecoration(
+                  border: Border.all(color: Colors.yellowAccent, width: 1.4),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+                child: const Center(
+                  child: SizedBox(
+                    width: 8,
+                    height: 8,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Colors.yellowAccent,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
 }

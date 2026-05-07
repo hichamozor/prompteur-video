@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../providers/settings_provider.dart';
 import '../models/settings_model.dart';
+import '../providers/settings_provider.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -10,7 +10,6 @@ class SettingsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final provider = context.watch<SettingsProvider>();
     final s = provider.settings;
-
     void upd(PrompterSettings ns) => provider.updateSettings(ns);
 
     return Scaffold(
@@ -18,32 +17,51 @@ class SettingsScreen extends StatelessWidget {
       appBar: AppBar(
         backgroundColor: const Color(0xFF1A1A2E),
         elevation: 0,
-        title: const Text('Paramètres', style: TextStyle(color: Colors.white)),
+        title:
+            const Text('Paramètres', style: TextStyle(color: Colors.white)),
         iconTheme: const IconThemeData(color: Colors.white),
       ),
       body: ListView(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         children: [
-          // ── TEXTE ──────────────────────────────────────────────
+          // ── TEXTE
           _Header('TEXTE'),
           _Card([
-            _Slider(icon: Icons.text_fields, label: 'Taille police',
-                value: s.fontSize, min: 16, max: 80, divs: 32,
-                display: '${s.fontSize.round()}px', onChanged: provider.updateFontSize),
+            _Slider(
+                icon: Icons.text_fields,
+                label: 'Taille police',
+                value: s.fontSize,
+                min: 16,
+                max: 80,
+                divs: 32,
+                display: '${s.fontSize.round()}px',
+                onChanged: provider.updateFontSize),
             _Div(),
-            _Slider(icon: Icons.format_line_spacing, label: 'Interligne',
-                value: s.lineSpacing, min: 1.0, max: 3.0, divs: 20,
+            _Slider(
+                icon: Icons.format_line_spacing,
+                label: 'Interligne',
+                value: s.lineSpacing,
+                min: 1.0,
+                max: 3.0,
+                divs: 20,
                 display: s.lineSpacing.toStringAsFixed(1),
                 onChanged: (v) => upd(s.copyWith(lineSpacing: v))),
             _Div(),
-            _Slider(icon: Icons.margin, label: 'Marges',
-                value: s.marginHorizontal, min: 0, max: 64, divs: 16,
+            _Slider(
+                icon: Icons.margin,
+                label: 'Marges',
+                value: s.marginHorizontal,
+                min: 0,
+                max: 64,
+                divs: 16,
                 display: '${s.marginHorizontal.round()}',
                 onChanged: (v) => upd(s.copyWith(marginHorizontal: v))),
             _Div(),
             ListTile(
-              leading: const Icon(Icons.font_download, color: Color(0xFF6C63FF), size: 20),
-              title: const Text('Police', style: TextStyle(color: Colors.white70, fontSize: 14)),
+              leading: const Icon(Icons.font_download,
+                  color: Color(0xFF6C63FF), size: 20),
+              title: const Text('Police',
+                  style: TextStyle(color: Colors.white70, fontSize: 14)),
               trailing: DropdownButton<String>(
                 value: s.fontFamily,
                 dropdownColor: const Color(0xFF16213E),
@@ -52,73 +70,113 @@ class SettingsScreen extends StatelessWidget {
                 items: const [
                   DropdownMenuItem(value: 'Default', child: Text('Par défaut')),
                   DropdownMenuItem(value: 'serif', child: Text('Serif')),
-                  DropdownMenuItem(value: 'monospace', child: Text('Monospace')),
-                  DropdownMenuItem(value: 'sans-serif-condensed', child: Text('Condensé')),
-                  DropdownMenuItem(value: 'sans-serif-light', child: Text('Light')),
+                  DropdownMenuItem(
+                      value: 'monospace', child: Text('Monospace')),
+                  DropdownMenuItem(
+                      value: 'sans-serif-condensed',
+                      child: Text('Condensé')),
+                  DropdownMenuItem(
+                      value: 'sans-serif-light', child: Text('Light')),
                 ],
                 onChanged: (v) => upd(s.copyWith(fontFamily: v ?? 'Default')),
               ),
             ),
             _Div(),
             ListTile(
-              leading: const Icon(Icons.format_align_center, color: Color(0xFF6C63FF), size: 20),
-              title: const Text('Alignement', style: TextStyle(color: Colors.white70, fontSize: 14)),
+              leading: const Icon(Icons.format_align_center,
+                  color: Color(0xFF6C63FF), size: 20),
+              title: const Text('Alignement',
+                  style: TextStyle(color: Colors.white70, fontSize: 14)),
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  _AlignBtn(Icons.format_align_left, s.textAlign == TextAlign.left,
+                  _AlignBtn(
+                      Icons.format_align_left,
+                      s.textAlign == TextAlign.left,
                       () => upd(s.copyWith(textAlign: TextAlign.left))),
-                  _AlignBtn(Icons.format_align_center, s.textAlign == TextAlign.center,
+                  _AlignBtn(
+                      Icons.format_align_center,
+                      s.textAlign == TextAlign.center,
                       () => upd(s.copyWith(textAlign: TextAlign.center))),
-                  _AlignBtn(Icons.format_align_right, s.textAlign == TextAlign.right,
+                  _AlignBtn(
+                      Icons.format_align_right,
+                      s.textAlign == TextAlign.right,
                       () => upd(s.copyWith(textAlign: TextAlign.right))),
                 ],
               ),
             ),
           ]),
 
-          // ── COULEURS ────────────────────────────────────────────
+          // ── COULEURS
           _Header('COULEURS'),
           _Card([
             ListTile(
-              leading: const Icon(Icons.color_lens, color: Color(0xFF6C63FF), size: 20),
-              title: const Text('Couleur du texte', style: TextStyle(color: Colors.white70, fontSize: 14)),
+              leading: const Icon(Icons.color_lens,
+                  color: Color(0xFF6C63FF), size: 20),
+              title: const Text('Couleur du texte',
+                  style: TextStyle(color: Colors.white70, fontSize: 14)),
               trailing: _ColorRow(
                 selected: s.textColor,
-                colors: const [Colors.white, Colors.yellow, Colors.greenAccent,
-                  Colors.cyanAccent, Colors.orangeAccent, Colors.pinkAccent],
+                colors: const [
+                  Colors.white,
+                  Colors.yellow,
+                  Colors.greenAccent,
+                  Colors.cyanAccent,
+                  Colors.orangeAccent,
+                  Colors.pinkAccent,
+                ],
                 onPick: (c) => upd(s.copyWith(textColor: c)),
               ),
             ),
             _Div(),
             ListTile(
-              leading: const Icon(Icons.rectangle, color: Color(0xFF6C63FF), size: 20),
-              title: const Text('Fond du texte', style: TextStyle(color: Colors.white70, fontSize: 14)),
+              leading: const Icon(Icons.rectangle,
+                  color: Color(0xFF6C63FF), size: 20),
+              title: const Text('Fond du texte',
+                  style: TextStyle(color: Colors.white70, fontSize: 14)),
               trailing: _ColorRow(
                 selected: s.backgroundColor,
-                colors: const [Colors.black, Colors.white, Colors.indigo,
-                  Colors.teal, Colors.brown, Colors.blueGrey],
+                colors: const [
+                  Colors.black,
+                  Colors.white,
+                  Colors.indigo,
+                  Colors.teal,
+                  Colors.brown,
+                  Colors.blueGrey,
+                ],
                 onPick: (c) => upd(s.copyWith(backgroundColor: c)),
               ),
             ),
             _Div(),
-            _Slider(icon: Icons.opacity, label: 'Opacité fond',
-                value: s.backgroundOpacity, min: 0, max: 1, divs: 20,
+            _Slider(
+                icon: Icons.opacity,
+                label: 'Opacité fond',
+                value: s.backgroundOpacity,
+                min: 0,
+                max: 1,
+                divs: 20,
                 display: '${(s.backgroundOpacity * 100).round()}%',
                 onChanged: (v) => upd(s.copyWith(backgroundOpacity: v))),
           ]),
 
-          // ── DÉFILEMENT ─────────────────────────────────────────
+          // ── DÉFILEMENT
           _Header('DÉFILEMENT'),
           _Card([
-            _Slider(icon: Icons.speed, label: 'Vitesse',
-                value: s.scrollSpeed, min: 20, max: 300, divs: 28,
+            _Slider(
+                icon: Icons.speed,
+                label: 'Vitesse',
+                value: s.scrollSpeed,
+                min: 20,
+                max: 300,
+                divs: 28,
                 display: '${s.scrollSpeed.round()}',
                 onChanged: provider.updateScrollSpeed),
             _Div(),
             ListTile(
-              leading: const Icon(Icons.timer, color: Color(0xFF6C63FF), size: 20),
-              title: const Text('Compte à rebours', style: TextStyle(color: Colors.white70, fontSize: 14)),
+              leading: const Icon(Icons.timer,
+                  color: Color(0xFF6C63FF), size: 20),
+              title: const Text('Compte à rebours',
+                  style: TextStyle(color: Colors.white70, fontSize: 14)),
               trailing: DropdownButton<int>(
                 value: s.countdownSeconds,
                 dropdownColor: const Color(0xFF16213E),
@@ -133,14 +191,58 @@ class SettingsScreen extends StatelessWidget {
                 onChanged: (v) => upd(s.copyWith(countdownSeconds: v ?? 3)),
               ),
             ),
+            _Div(),
+            _Slider(
+              icon: Icons.menu_book,
+              label: 'Lecture (mots/min)',
+              value: s.wpm.toDouble(),
+              min: 80,
+              max: 220,
+              divs: 28,
+              display: '${s.wpm} wpm',
+              onChanged: (v) => upd(s.copyWith(wpm: v.round())),
+            ),
           ]),
 
-          // ── VIDÉO ──────────────────────────────────────────────
+          // ── REPÈRES VISUELS
+          _Header('REPÈRES VISUELS'),
+          _Card([
+            _Switch(
+              Icons.horizontal_rule,
+              'Ligne de lecture',
+              s.showReadingLine,
+              (v) => upd(s.copyWith(showReadingLine: v)),
+            ),
+            _Div(),
+            _Slider(
+              icon: Icons.gradient,
+              label: 'Masque haut/bas',
+              value: s.focusMaskOpacity,
+              min: 0,
+              max: 0.85,
+              divs: 17,
+              display: s.focusMaskOpacity == 0
+                  ? 'Off'
+                  : '${(s.focusMaskOpacity * 100).round()}%',
+              onChanged: (v) => upd(s.copyWith(focusMaskOpacity: v)),
+            ),
+            _Div(),
+            _Switch(
+              Icons.crop_free,
+              'Safe-zone TikTok / Reels',
+              s.showSafeZone,
+              (v) => upd(s.copyWith(showSafeZone: v)),
+            ),
+          ]),
+
+          // ── VIDÉO
           _Header('VIDÉO'),
           _Card([
             ListTile(
-              leading: const Icon(Icons.hd, color: Color(0xFF6C63FF), size: 20),
-              title: const Text('Résolution', style: TextStyle(color: Colors.white70, fontSize: 14)),
+              leading: const Icon(Icons.hd,
+                  color: Color(0xFF6C63FF), size: 20),
+              title: const Text('Résolution',
+                  style: TextStyle(color: Colors.white70, fontSize: 14)),
               trailing: DropdownButton<String>(
                 value: s.videoResolution,
                 dropdownColor: const Color(0xFF16213E),
@@ -148,16 +250,21 @@ class SettingsScreen extends StatelessWidget {
                 underline: const SizedBox(),
                 items: const [
                   DropdownMenuItem(value: 'high', child: Text('720p HD')),
-                  DropdownMenuItem(value: 'veryHigh', child: Text('1080p Full HD')),
-                  DropdownMenuItem(value: 'ultraHigh', child: Text('4K Ultra HD')),
+                  DropdownMenuItem(
+                      value: 'veryHigh', child: Text('1080p Full HD')),
+                  DropdownMenuItem(
+                      value: 'ultraHigh', child: Text('4K Ultra HD')),
                 ],
-                onChanged: (v) => upd(s.copyWith(videoResolution: v ?? 'veryHigh')),
+                onChanged: (v) =>
+                    upd(s.copyWith(videoResolution: v ?? 'veryHigh')),
               ),
             ),
             _Div(),
             ListTile(
-              leading: const Icon(Icons.speed, color: Color(0xFF6C63FF), size: 20),
-              title: const Text('Images / seconde', style: TextStyle(color: Colors.white70, fontSize: 14)),
+              leading: const Icon(Icons.speed,
+                  color: Color(0xFF6C63FF), size: 20),
+              title: const Text('Images / seconde',
+                  style: TextStyle(color: Colors.white70, fontSize: 14)),
               subtitle: const Text('Selon les capacités du téléphone',
                   style: TextStyle(color: Colors.white38, fontSize: 11)),
               trailing: DropdownButton<int>(
@@ -174,7 +281,7 @@ class SettingsScreen extends StatelessWidget {
             ),
           ]),
 
-          // ── CAMÉRA ─────────────────────────────────────────────
+          // ── CAMÉRA
           _Header('CAMÉRA'),
           _Card([
             _Switch(Icons.videocam, 'Afficher la caméra', s.showCamera,
@@ -187,11 +294,37 @@ class SettingsScreen extends StatelessWidget {
                 (v) => upd(s.copyWith(mirrorMode: v))),
           ]),
 
-          // ── AFFICHAGE ──────────────────────────────────────────
+          // ── AFFICHAGE
           _Header('AFFICHAGE'),
           _Card([
-            _Switch(Icons.screen_lock_landscape, "Garder l'écran allumé", s.keepScreenOn,
+            _Switch(
+                Icons.screen_lock_landscape,
+                "Garder l'écran allumé",
+                s.keepScreenOn,
                 (v) => upd(s.copyWith(keepScreenOn: v))),
+          ]),
+
+          // ── ASTUCES
+          _Header('ASTUCES'),
+          _Card([
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 12, 16, 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _Tip('Pendant la prise',
+                      '• 1 tap : afficher/cacher les contrôles\n'
+                          '• 2 taps : focus + expo au point touché\n'
+                          '• Long press : verrouiller/déverrouiller l\'expo\n'
+                          '• Pinch : zoom'),
+                  SizedBox(height: 10),
+                  _Tip('Markdown du script',
+                      '• **gras** pour insister\n'
+                          '• # Titre de section\n'
+                          '• // commentaire (visible mais pas compté)'),
+                ],
+              ),
+            ),
           ]),
 
           const SizedBox(height: 32),
@@ -201,7 +334,31 @@ class SettingsScreen extends StatelessWidget {
   }
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+class _Tip extends StatelessWidget {
+  final String title;
+  final String body;
+  const _Tip(this.title, this.body);
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title,
+            style: const TextStyle(
+                color: Color(0xFF6C63FF),
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1.2)),
+        const SizedBox(height: 4),
+        Text(body,
+            style: const TextStyle(
+                color: Colors.white70, fontSize: 13, height: 1.5)),
+      ],
+    );
+  }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 class _Header extends StatelessWidget {
   final String title;
@@ -211,8 +368,10 @@ class _Header extends StatelessWidget {
         padding: const EdgeInsets.only(top: 20, bottom: 6, left: 4),
         child: Text(title,
             style: const TextStyle(
-                color: Color(0xFF6C63FF), fontSize: 11,
-                fontWeight: FontWeight.bold, letterSpacing: 1.8)),
+                color: Color(0xFF6C63FF),
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1.8)),
       );
 }
 
@@ -231,8 +390,8 @@ class _Card extends StatelessWidget {
 
 class _Div extends StatelessWidget {
   @override
-  Widget build(BuildContext context) =>
-      const Divider(color: Colors.white12, height: 1, indent: 16, endIndent: 16);
+  Widget build(BuildContext context) => const Divider(
+      color: Colors.white12, height: 1, indent: 16, endIndent: 16);
 }
 
 class _Slider extends StatelessWidget {
@@ -242,30 +401,44 @@ class _Slider extends StatelessWidget {
   final int divs;
   final String display;
   final ValueChanged<double> onChanged;
-
-  const _Slider({required this.icon, required this.label, required this.value,
-      required this.min, required this.max, required this.divs,
-      required this.display, required this.onChanged});
-
+  const _Slider(
+      {required this.icon,
+      required this.label,
+      required this.value,
+      required this.min,
+      required this.max,
+      required this.divs,
+      required this.display,
+      required this.onChanged});
   @override
   Widget build(BuildContext context) => Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
         child: Row(children: [
           Icon(icon, color: const Color(0xFF6C63FF), size: 20),
           const SizedBox(width: 10),
-          SizedBox(width: 100,
-              child: Text(label, style: const TextStyle(color: Colors.white70, fontSize: 13))),
+          SizedBox(
+              width: 110,
+              child: Text(label,
+                  style:
+                      const TextStyle(color: Colors.white70, fontSize: 13))),
           Expanded(
             child: SliderTheme(
               data: const SliderThemeData(
-                activeTrackColor: Color(0xFF6C63FF), thumbColor: Color(0xFF6C63FF),
-                inactiveTrackColor: Colors.white24, trackHeight: 2,
-                thumbShape: RoundSliderThumbShape(enabledThumbRadius: 7)),
-              child: Slider(value: value.clamp(min, max), min: min, max: max,
-                  divisions: divs, onChanged: onChanged),
+                  activeTrackColor: Color(0xFF6C63FF),
+                  thumbColor: Color(0xFF6C63FF),
+                  inactiveTrackColor: Colors.white24,
+                  trackHeight: 2,
+                  thumbShape: RoundSliderThumbShape(enabledThumbRadius: 7)),
+              child: Slider(
+                  value: value.clamp(min, max),
+                  min: min,
+                  max: max,
+                  divisions: divs,
+                  onChanged: onChanged),
             ),
           ),
-          SizedBox(width: 46,
+          SizedBox(
+              width: 56,
               child: Text(display,
                   style: const TextStyle(color: Colors.white, fontSize: 12),
                   textAlign: TextAlign.right)),
@@ -278,14 +451,15 @@ class _Switch extends StatelessWidget {
   final String label;
   final bool value;
   final ValueChanged<bool> onChanged;
-
   const _Switch(this.icon, this.label, this.value, this.onChanged);
-
   @override
   Widget build(BuildContext context) => ListTile(
         leading: Icon(icon, color: const Color(0xFF6C63FF), size: 20),
-        title: Text(label, style: const TextStyle(color: Colors.white70, fontSize: 14)),
-        trailing: Switch(value: value, onChanged: onChanged,
+        title: Text(label,
+            style: const TextStyle(color: Colors.white70, fontSize: 14)),
+        trailing: Switch(
+            value: value,
+            onChanged: onChanged,
             activeColor: const Color(0xFF6C63FF)),
       );
 }
@@ -294,25 +468,29 @@ class _ColorRow extends StatelessWidget {
   final Color selected;
   final List<Color> colors;
   final ValueChanged<Color> onPick;
-
-  const _ColorRow({required this.selected, required this.colors, required this.onPick});
-
+  const _ColorRow(
+      {required this.selected, required this.colors, required this.onPick});
   @override
   Widget build(BuildContext context) => Row(
         mainAxisSize: MainAxisSize.min,
-        children: colors.map((c) => GestureDetector(
-              onTap: () => onPick(c),
-              child: Container(
-                width: 24, height: 24,
-                margin: const EdgeInsets.only(left: 5),
-                decoration: BoxDecoration(
-                  color: c, shape: BoxShape.circle,
-                  border: Border.all(
-                    color: selected.value == c.value
-                        ? const Color(0xFF6C63FF) : Colors.white30,
-                    width: selected.value == c.value ? 2.5 : 1)),
-              ),
-            )).toList(),
+        children: colors
+            .map((c) => GestureDetector(
+                  onTap: () => onPick(c),
+                  child: Container(
+                    width: 24,
+                    height: 24,
+                    margin: const EdgeInsets.only(left: 5),
+                    decoration: BoxDecoration(
+                        color: c,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                            color: selected.value == c.value
+                                ? const Color(0xFF6C63FF)
+                                : Colors.white30,
+                            width: selected.value == c.value ? 2.5 : 1)),
+                  ),
+                ))
+            .toList(),
       );
 }
 
@@ -320,20 +498,20 @@ class _AlignBtn extends StatelessWidget {
   final IconData icon;
   final bool active;
   final VoidCallback onTap;
-
   const _AlignBtn(this.icon, this.active, this.onTap);
-
   @override
   Widget build(BuildContext context) => GestureDetector(
         onTap: onTap,
         child: Container(
-          width: 32, height: 32,
+          width: 32,
+          height: 32,
           margin: const EdgeInsets.only(left: 4),
           decoration: BoxDecoration(
-            color: active ? const Color(0xFF6C63FF) : Colors.transparent,
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(
-                color: active ? const Color(0xFF6C63FF) : Colors.white30)),
+              color: active ? const Color(0xFF6C63FF) : Colors.transparent,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                  color:
+                      active ? const Color(0xFF6C63FF) : Colors.white30)),
           child: Icon(icon, color: Colors.white, size: 18),
         ),
       );

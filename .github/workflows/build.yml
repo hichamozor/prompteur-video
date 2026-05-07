@@ -37,6 +37,8 @@ jobs:
         run: |
           rm -rf /tmp/app/lib/
           cp -r lib/ /tmp/app/lib/
+          mkdir -p /tmp/app/assets
+          cp -r assets/. /tmp/app/assets/
           cp pubspec.yaml /tmp/app/pubspec.yaml
           cp android/app/src/main/AndroidManifest.xml \
              /tmp/app/android/app/src/main/AndroidManifest.xml
@@ -56,6 +58,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: prompteur-video-v1.0
+          name: prompteur-video-v1.1
           path: /tmp/app/build/app/outputs/flutter-apk/app-release.apk
           retention-days: 30
