@@ -2,79 +2,28 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:camera/camera.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:gal/gal.dart';
-import 'package:image/image.dart' as img;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import '../models/settings_model.dart';
-import '../providers/scripts_provider.dart';
 import '../providers/settings_provider.dart';
+import '../services/hard_words.dart';
 import '../services/logger.dart';
 import '../services/markdown_parser.dart';
+import '../services/mjpeg_isolate.dart';
+import '../services/storage_service.dart';
 import '../services/wifi_server.dart';
 
-// ── Conversion YUV → JPEG en isolate ─────────────────────────────────────────
-
-class _YuvParams {
-  final int width, height, yStride, uvStride, uvPixelStride, rotation;
-  final Uint8List y, u, v;
-
-  const _YuvParams({
-    required this.width,
-    required this.height,
-    required this.y,
-    required this.u,
-    required this.v,
-    required this.yStride,
-    required this.uvStride,
-    required this.uvPixelStride,
-    required this.rotation,
-  });
-}
-
-Uint8List _convertYuvToJpeg(_YuvParams p) {
-  final outW = p.width ~/ 4;
-  final outH = p.height ~/ 4;
-  final base = img.Image(width: outW, height: outH);
-
-  for (int row = 0; row < outH; row++) {
-    for (int col = 0; col < outW; col++) {
-      final srcRow = row * 4;
-      final srcCol = col * 4;
-      final yIdx = srcRow * p.yStride + srcCol;
-      final uvRow = srcRow >> 1;
-      final uvCol = (srcCol >> 1) * p.uvPixelStride;
-      final uvIdx = uvRow * p.uvStride + uvCol;
-
-      if (yIdx >= p.y.length || uvIdx >= p.u.length) continue;
-
-      final yv = p.y[yIdx].toDouble();
-      final uv = p.u[uvIdx].toDouble() - 128;
-      final vv = p.v[uvIdx].toDouble() - 128;
-
-      final r = (yv + 1.402 * vv).clamp(0, 255).toInt();
-      final g = (yv - 0.344 * uv - 0.714 * vv).clamp(0, 255).toInt();
-      final b = (yv + 1.772 * uv).clamp(0, 255).toInt();
-
-      base.setPixelRgb(col, row, r, g, b);
-    }
-  }
-
-  final rotated = p.rotation != 0 ? img.copyRotate(base, angle: p.rotation) : base;
-  return img.encodeJpg(rotated, quality: 50);
-}
-
-// ── Widget ───────────────────────────────────────────────────────────────────
-
+/// Prompteur "sans bibliothèque" : démarre toujours avec un texte vide.
+/// Le texte arrive depuis le PC via WebSocket (`script:...`) ou peut être
+/// poussé en local par un futur écran.
 class PrompterScreen extends StatefulWidget {
-  final String scriptId;
-  const PrompterScreen({super.key, required this.scriptId});
+  const PrompterScreen({super.key});
 
   @override
   State<PrompterScreen> createState() => _PrompterScreenState();
@@ -112,21 +61,33 @@ class _PrompterScreenState extends State<PrompterScreen>
   Timer? _recTimer;
 
   // ── MJPEG
-  bool _isConvertingFrame = false;
+  final MjpegIsolate _mjpeg = MjpegIsolate();
+  bool _converting = false;
+  DateTime _lastMjpegSent = DateTime.fromMillisecondsSinceEpoch(0);
 
   // ── Serveur WiFi
   final WifiServer _wifi = WifiServer();
   StreamSubscription<String>? _wsSub;
-  Timer? _statusTimer;
+  String _authToken = '';
+
+  // ── Hint éphémère
+  String? _hintMessage;
+  Timer? _hintTimer;
+
+  // ── Heartbeat status (envoie un statut toutes les 5s pour keepalive,
+  //    mais aussi push immédiat sur tout changement = event-driven)
+  Timer? _statusKeepalive;
 
   late SettingsProvider _settingsProvider;
-  late ScriptsProvider _scriptsProvider;
+
+  /// Contenu du prompteur. Vide au démarrage, alimenté par WS depuis le PC
+  /// (commande `script:...`). Pas de persistance — un nouveau lancement = vide.
+  String _content = '';
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     _settingsProvider = context.read<SettingsProvider>();
-    _scriptsProvider = context.read<ScriptsProvider>();
   }
 
   @override
@@ -134,10 +95,13 @@ class _PrompterScreenState extends State<PrompterScreen>
     super.initState();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _loadAuthToken();
+      await _mjpeg.start();
       await _initCamera();
       await _startWifi();
-      _statusTimer = Timer.periodic(
-          const Duration(seconds: 1), (_) => _broadcastStatus());
+      // Keepalive status toutes les 5s (pour les clients qui auraient raté un push)
+      _statusKeepalive = Timer.periodic(
+          const Duration(seconds: 5), (_) => _broadcastStatus());
     });
   }
 
@@ -147,14 +111,21 @@ class _PrompterScreenState extends State<PrompterScreen>
     _ticker?.dispose();
     _scroll.dispose();
     _recTimer?.cancel();
-    _statusTimer?.cancel();
+    _statusKeepalive?.cancel();
     _countdownTimer?.cancel();
     _focusReticleTimer?.cancel();
+    _hintTimer?.cancel();
     _wsSub?.cancel();
     _wifi.dispose();
+    _mjpeg.dispose();
     _cam?.dispose();
     WakelockPlus.disable();
     super.dispose();
+  }
+
+  Future<void> _loadAuthToken() async {
+    _authToken = await StorageService.getOrCreateAuthToken();
+    if (mounted) setState(() {});
   }
 
   // ── Caméra ─────────────────────────────────────────────────────────────────
@@ -193,7 +164,6 @@ class _PrompterScreenState extends State<PrompterScreen>
     try {
       _cameras = await availableCameras();
       if (_cameras.isEmpty) {
-        Log.w('Prompter', 'no cameras available');
         if (mounted) setState(() => _cameraReady = true);
         _startCountdown();
         return;
@@ -263,7 +233,7 @@ class _PrompterScreenState extends State<PrompterScreen>
     }
   }
 
-  // ── MJPEG ──────────────────────────────────────────────────────────────────
+  // ── MJPEG via isolate persistant ──────────────────────────────────────────
 
   void _startImageStream() {
     if (_cam == null || !_cam!.value.isInitialized) return;
@@ -271,11 +241,19 @@ class _PrompterScreenState extends State<PrompterScreen>
 
     try {
       _cam!.startImageStream((CameraImage frame) {
-        if (!_wifi.hasMjpegClients || _isConvertingFrame) return;
+        if (!_wifi.hasMjpegClients) return;
+        if (_converting) return;
         if (frame.planes.length < 3) return;
 
-        _isConvertingFrame = true;
-        final params = _YuvParams(
+        // Throttle à ~15fps max pour ne pas saturer le réseau/CPU
+        final now = DateTime.now();
+        if (now.difference(_lastMjpegSent) < const Duration(milliseconds: 65)) {
+          return;
+        }
+        _lastMjpegSent = now;
+
+        _converting = true;
+        final req = FrameRequest(
           width: frame.width,
           height: frame.height,
           y: Uint8List.fromList(frame.planes[0].bytes),
@@ -285,14 +263,15 @@ class _PrompterScreenState extends State<PrompterScreen>
           uvStride: frame.planes[1].bytesPerRow,
           uvPixelStride: frame.planes[1].bytesPerPixel ?? 1,
           rotation: _sensorRotation,
+          step: 2,
+          quality: 78,
         );
-
-        compute(_convertYuvToJpeg, params).then((jpeg) {
-          _wifi.sendMjpegFrame(jpeg);
-          _isConvertingFrame = false;
+        _mjpeg.convert(req).then((jpeg) {
+          if (jpeg.isNotEmpty) _wifi.sendMjpegFrame(jpeg);
+          _converting = false;
         }).catchError((e) {
-          Log.w('Prompter', 'jpeg convert error: $e');
-          _isConvertingFrame = false;
+          Log.w('Prompter', 'mjpeg convert error: $e');
+          _converting = false;
         });
       });
     } catch (e, st) {
@@ -310,7 +289,7 @@ class _PrompterScreenState extends State<PrompterScreen>
     }
   }
 
-  // ── Tap-to-focus / tap-to-expose ───────────────────────────────────────────
+  // ── Tap-to-focus / AE lock ────────────────────────────────────────────────
 
   Future<void> _focusAtPoint(Offset localPos, Size widgetSize) async {
     if (_cam == null || !_cam!.value.isInitialized) return;
@@ -323,7 +302,6 @@ class _PrompterScreenState extends State<PrompterScreen>
       await _cam!.setFocusPoint(point);
       await _cam!.setExposurePoint(point);
       _aeLocked = false;
-      Log.d('Prompter', 'focus @ ${nx.toStringAsFixed(2)}, ${ny.toStringAsFixed(2)}');
     } catch (e) {
       Log.w('Prompter', 'focus failed: $e');
     }
@@ -348,8 +326,6 @@ class _PrompterScreenState extends State<PrompterScreen>
     }
   }
 
-  String? _hintMessage;
-  Timer? _hintTimer;
   void _showHint(String msg) {
     setState(() => _hintMessage = msg);
     _hintTimer?.cancel();
@@ -385,7 +361,7 @@ class _PrompterScreenState extends State<PrompterScreen>
     } catch (_) {}
   }
 
-  // ── Compte à rebours ───────────────────────────────────────────────────────
+  // ── Compte à rebours ──────────────────────────────────────────────────────
 
   void _startCountdown() {
     final secs = _settingsProvider.settings.countdownSeconds;
@@ -433,28 +409,55 @@ class _PrompterScreenState extends State<PrompterScreen>
       }
       final delta = (now - _lastTickUs) / 1000000.0;
       _lastTickUs = now;
-      final next =
-          _scroll.offset + _settingsProvider.settings.scrollSpeed * delta;
+      final settings = _settingsProvider.settings;
+      // Slowdown auto si la fenêtre courante (autour du milieu de l'écran)
+      // contient un mot dur.
+      double speed = settings.scrollSpeed;
+      if (settings.slowOnHardWords) {
+        if (_isOnHardLine(_content)) speed *= 0.8;
+      }
+      final next = _scroll.offset + speed * delta;
       if (next >= _scroll.position.maxScrollExtent) {
         _scroll.jumpTo(_scroll.position.maxScrollExtent);
         _ticker?.stop();
         if (mounted) setState(() => _isPlaying = false);
+        _broadcastStatus();
       } else {
         _scroll.jumpTo(next);
       }
     })
       ..start();
+    _broadcastStatus();
+  }
+
+  /// Renvoie true si la fenêtre actuelle (~200px de chaque côté du milieu
+  /// de l'écran en offset scroll) contient un mot dur.
+  bool _isOnHardLine(String content) {
+    if (!_scroll.hasClients) return false;
+    final offset = _scroll.offset;
+    final maxExtent = _scroll.position.maxScrollExtent;
+    if (maxExtent <= 0) return false;
+    final ratio = (offset / maxExtent).clamp(0.0, 1.0);
+    final lines = content.split('\n');
+    if (lines.isEmpty) return false;
+    final centerIdx = (ratio * lines.length).round().clamp(0, lines.length - 1);
+    final lo = (centerIdx - 1).clamp(0, lines.length - 1);
+    final hi = (centerIdx + 1).clamp(0, lines.length - 1);
+    for (var i = lo; i <= hi; i++) {
+      if (HardWords.findInText(lines[i]).isNotEmpty) return true;
+    }
+    return false;
   }
 
   void _pauseScrolling() {
     _ticker?.stop();
     if (mounted) setState(() => _isPlaying = false);
+    _broadcastStatus();
   }
 
   void _togglePlay() {
     if (_isCountingDown) return;
     _isPlaying ? _pauseScrolling() : _startScrolling();
-    _broadcastStatus();
   }
 
   void _adjustSpeed(double delta) {
@@ -464,10 +467,10 @@ class _PrompterScreenState extends State<PrompterScreen>
     _broadcastStatus();
   }
 
-  void _rewind(double seconds) {
+  void _seek(double seconds) {
     if (!_scroll.hasClients) return;
     final target =
-        (_scroll.offset - _settingsProvider.settings.scrollSpeed * seconds)
+        (_scroll.offset + _settingsProvider.settings.scrollSpeed * seconds)
             .clamp(0.0, _scroll.position.maxScrollExtent);
     _scroll.jumpTo(target);
     _broadcastStatus();
@@ -477,6 +480,23 @@ class _PrompterScreenState extends State<PrompterScreen>
     _pauseScrolling();
     if (_scroll.hasClients) _scroll.jumpTo(0);
     _broadcastStatus();
+  }
+
+  // ── Swipe horizontal ──────────────────────────────────────────────────────
+
+  void _onHorizontalDragEnd(DragEndDetails d) {
+    final v = d.primaryVelocity ?? 0;
+    if (v.abs() < 400) return; // swipe trop lent
+    if (v < 0) {
+      // swipe gauche → -2s
+      _seek(-2.0);
+      _showHint('-2 s');
+    } else {
+      // swipe droite → +2s
+      _seek(2.0);
+      _showHint('+2 s');
+    }
+    HapticFeedback.selectionClick();
   }
 
   // ── Enregistrement ─────────────────────────────────────────────────────────
@@ -532,25 +552,29 @@ class _PrompterScreenState extends State<PrompterScreen>
     }
   }
 
-  Future<void> _saveToGallery(String path) async {
+  /// Envoie la vidéo capturée directement dans la galerie système, album
+  /// "Prompteur". Pas de copie intermédiaire — un seul fichier sur le tel.
+  Future<void> _saveToGallery(String tempPath) async {
     try {
       if (!await Gal.hasAccess()) await Gal.requestAccess();
-      await Gal.putVideo(path);
+      await Gal.putVideo(tempPath, album: 'Prompteur');
+      Log.i('Prompter', 'video saved to gallery album "Prompteur"');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Vidéo sauvegardée dans la Galerie ✓'),
+            content: Text('Vidéo enregistrée dans la galerie ✓'),
             backgroundColor: Colors.green,
           ),
         );
       }
     } catch (e, st) {
-      Log.e('Prompter', 'save to gallery failed', e, st);
+      Log.e('Prompter', 'gallery save failed', e, st);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text('Erreur sauvegarde: $e'),
-              backgroundColor: Colors.orange),
+            content: Text('Échec galerie : $e'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     }
@@ -563,36 +587,35 @@ class _PrompterScreenState extends State<PrompterScreen>
     return '$h:$m:$s';
   }
 
-  // ── Serveur WiFi ───────────────────────────────────────────────────────────
+  // ── Serveur WiFi ──────────────────────────────────────────────────────────
 
   Future<void> _startWifi() async {
-    _wifi.scriptProvider = () =>
-        _scriptsProvider.findById(widget.scriptId)?.content ?? '';
-    await _wifi.start();
-    _wsSub = _wifi.onWsMessage.listen(_handleWsMessage);
+    _wifi.scriptProvider = () => _content;
+    await _wifi.start(authToken: _authToken);
+    _wsSub = _wifi.onAuthedMessage.listen(_handleWsMessage);
+    if (mounted) setState(() {}); // refresh IP display
   }
 
   void _handleWsMessage(String raw) {
     if (raw.startsWith('script:')) {
       final text = raw.substring(7);
-      _scriptsProvider.update(widget.scriptId, content: text).then((_) {
-        if (_scroll.hasClients) _scroll.jumpTo(0);
-        if (_isPlaying) _pauseScrolling();
-      });
+      if (!mounted) return;
+      setState(() => _content = text);
+      if (_scroll.hasClients) _scroll.jumpTo(0);
+      if (_isPlaying) _pauseScrolling();
       return;
     }
-    if (raw == 'ping') return;
     switch (raw) {
       case 'toggle': _togglePlay(); break;
       case 'pause':  _pauseScrolling(); break;
       case 'play':   if (!_isCountingDown) _startScrolling(); break;
-      case 'rewind2': _rewind(2.0); break;
+      case 'rewind2': _seek(-2.0); break;
+      case 'forward2': _seek(2.0); break;
       case 'home':   _resetScroll(); break;
       case 'speed+': _adjustSpeed(10); break;
       case 'speed-': _adjustSpeed(-10); break;
       case 'rec':    _toggleRecording(); break;
     }
-    _broadcastStatus();
   }
 
   void _broadcastStatus() {
@@ -615,9 +638,7 @@ class _PrompterScreenState extends State<PrompterScreen>
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<SettingsProvider>().settings;
-    final script =
-        context.watch<ScriptsProvider>().findById(widget.scriptId);
-    final content = script?.content ?? '';
+    final content = _content;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -628,14 +649,14 @@ class _PrompterScreenState extends State<PrompterScreen>
             behavior: HitTestBehavior.opaque,
             onTap: () => setState(() => _showControls = !_showControls),
             onDoubleTapDown: (d) => _focusAtPoint(d.localPosition, size),
-            onDoubleTap: () {}, // reserved to make double-tap detector active
+            onDoubleTap: () {},
             onLongPress: _toggleAeLock,
             onScaleStart: _onScaleStart,
             onScaleUpdate: _onScaleUpdate,
             onScaleEnd: _onScaleEnd,
+            onHorizontalDragEnd: _onHorizontalDragEnd,
             child: Stack(
               children: [
-                // ── Fond caméra (sans distorsion)
                 if (_cameraReady &&
                     _cam != null &&
                     _cam!.value.isInitialized &&
@@ -658,33 +679,42 @@ class _PrompterScreenState extends State<PrompterScreen>
                     ),
                   ),
 
-                // ── Masque focus haut/bas
                 if (_cameraReady &&
                     settings.focusMaskOpacity > 0 &&
                     !_hideTextForZoom)
-                  IgnorePointer(
-                    child: _FocusMask(opacity: settings.focusMaskOpacity),
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: _FocusMask(opacity: settings.focusMaskOpacity),
+                    ),
                   ),
 
-                // ── Texte défilant
                 if (_cameraReady && !_hideTextForZoom)
-                  _buildTextOverlay(settings, content, size),
+                  content.trim().isEmpty
+                      ? _buildEmptyHint(size)
+                      : (settings.keywordsMode
+                          ? _buildKeywordsOverlay(settings, content, size)
+                          : _buildTextOverlay(settings, content, size)),
 
-                // ── Ligne de lecture
                 if (_cameraReady && settings.showReadingLine && !_hideTextForZoom)
-                  IgnorePointer(child: _ReadingLine(top: size.height / 3)),
-
-                // ── Safe-zone TikTok / Reels
-                if (_cameraReady && settings.showSafeZone && !_hideTextForZoom)
-                  IgnorePointer(child: _SafeZoneOverlay(size: size)),
-
-                // ── Reticle focus
-                if (_focusReticle != null)
-                  IgnorePointer(
-                    child: _FocusReticle(position: _focusReticle!),
+                  Positioned(
+                    top: size.height / 3,
+                    left: 0,
+                    right: 0,
+                    child: const IgnorePointer(child: _ReadingLineRow()),
                   ),
 
-                // ── Indicateur AE lock
+                if (_cameraReady && settings.showSafeZone && !_hideTextForZoom)
+                  Positioned.fill(
+                    child: IgnorePointer(child: _SafeZoneOverlay(size: size)),
+                  ),
+
+                if (_focusReticle != null)
+                  Positioned(
+                    left: _focusReticle!.dx - 30,
+                    top: _focusReticle!.dy - 30,
+                    child: const IgnorePointer(child: _FocusReticleAnim()),
+                  ),
+
                 if (_aeLocked && !_hideTextForZoom)
                   Positioned(
                     top: MediaQuery.of(context).padding.top + 12,
@@ -708,7 +738,6 @@ class _PrompterScreenState extends State<PrompterScreen>
                     ),
                   ),
 
-                // ── Hint / message éphémère
                 if (_hintMessage != null)
                   Center(
                     child: Container(
@@ -724,7 +753,6 @@ class _PrompterScreenState extends State<PrompterScreen>
                     ),
                   ),
 
-                // ── Indicateur zoom
                 if (_hideTextForZoom)
                   Center(
                     child: Container(
@@ -741,13 +769,11 @@ class _PrompterScreenState extends State<PrompterScreen>
                     ),
                   ),
 
-                // ── Chargement
                 if (!_cameraReady)
                   const Center(
                       child: CircularProgressIndicator(
-                          color: Color(0xFF6C63FF))),
+                          color: Color(0xFFD4AF37))),
 
-                // ── REC indicator
                 if (_isRecording)
                   Positioned(
                     top: MediaQuery.of(context).padding.top + 12,
@@ -772,7 +798,6 @@ class _PrompterScreenState extends State<PrompterScreen>
                     ),
                   ),
 
-                // ── Compte à rebours
                 if (_isCountingDown)
                   Center(
                     child: GestureDetector(
@@ -784,7 +809,7 @@ class _PrompterScreenState extends State<PrompterScreen>
                             color: Colors.black.withOpacity(0.78),
                             shape: BoxShape.circle,
                             border: Border.all(
-                                color: const Color(0xFF6C63FF), width: 3)),
+                                color: const Color(0xFFD4AF37), width: 3)),
                         child: Center(
                           child: Text('$_countdownValue',
                               style: const TextStyle(
@@ -796,12 +821,160 @@ class _PrompterScreenState extends State<PrompterScreen>
                     ),
                   ),
 
-                // ── Contrôles
                 if (_showControls && !_isCountingDown) _buildControls(settings),
               ],
             ),
           );
         },
+      ),
+    );
+  }
+
+  /// Affiché tant qu'aucun texte n'a été reçu : guide l'utilisateur vers la
+  /// page de contrôle PC où il peut coller son script depuis Google Docs.
+  Widget _buildEmptyHint(Size size) {
+    return Positioned.fill(
+      child: IgnorePointer(
+        child: Center(
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 24),
+            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 18),
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.55),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                  color: const Color(0xFFD4AF37).withOpacity(0.4), width: 1),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.wifi_tethering,
+                    color: Color(0xFFD4AF37), size: 36),
+                const SizedBox(height: 12),
+                const Text(
+                  'En attente d\'un script',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _wifi.ip.isEmpty
+                      ? 'Connecte le téléphone au WiFi pour récupérer une adresse.'
+                      : 'Ouvre  http://${_wifi.ip}:${WifiServer.port}  sur ton PC,\n'
+                          'colle ton texte depuis Google Docs, il apparaîtra ici.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.75),
+                    fontSize: 13,
+                    height: 1.5,
+                  ),
+                ),
+                if (_authToken.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFD4AF37).withOpacity(0.18),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      'Code : $_authToken',
+                      style: const TextStyle(
+                        color: Color(0xFFF2D27E),
+                        fontSize: 13,
+                        fontFamily: 'monospace',
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 2,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildKeywordsOverlay(PrompterSettings settings, String content, Size size) {
+    final keywords = PrompterMarkdown.extractKeywords(content);
+    if (keywords.isEmpty) {
+      return Positioned.fill(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Text(
+              'Mode mots-clés activé\nmais aucun **mot-clé** dans le script.\n\nMets en gras les mots à afficher en grand.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white.withOpacity(0.7),
+                fontSize: 16,
+                height: 1.6,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    // Pas de scroll ici : on construit une grande "scroll" qui change de mot
+    // à chaque "page" de viewport pour rester compatible avec play/pause/swipe.
+    return Positioned.fill(
+      child: SingleChildScrollView(
+        controller: _scroll,
+        physics: const NeverScrollableScrollPhysics(),
+        padding: EdgeInsets.symmetric(
+          horizontal: settings.marginHorizontal,
+          vertical: size.height * 0.45,
+        ),
+        child: Transform(
+          alignment: Alignment.center,
+          transform: Matrix4.identity()
+            ..scale(settings.mirrorMode ? -1.0 : 1.0, 1.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (var i = 0; i < keywords.length; i++) ...[
+                if (keywords[i].section != null) ...[
+                  Text(
+                    keywords[i].section!.toUpperCase(),
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        color: Color(0xFFE8C470),
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 3),
+                  ),
+                  const SizedBox(height: 18),
+                ],
+                Container(
+                  width: size.width,
+                  alignment: Alignment.center,
+                  padding: EdgeInsets.symmetric(
+                      vertical: size.height * 0.18,
+                      horizontal: 16),
+                  child: Text(
+                    keywords[i].text,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: settings.textColor,
+                      fontSize: settings.fontSize * 2.2,
+                      height: 1.05,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
+                if (i < keywords.length - 1) SizedBox(height: size.height * 0.4),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -832,7 +1005,7 @@ class _PrompterScreenState extends State<PrompterScreen>
                 PrompterMarkdown.parse(
                   content,
                   textColor: settings.textColor,
-                  sectionColor: const Color(0xFFFFC857),
+                  sectionColor: const Color(0xFFE8C470),
                   commentColor: Colors.white38,
                   fontSize: settings.fontSize,
                   baseWeight: FontWeight.w500,
@@ -854,11 +1027,9 @@ class _PrompterScreenState extends State<PrompterScreen>
     final botPad = MediaQuery.of(context).padding.bottom;
 
     return Stack(children: [
-      // ── Barre haute
+      // Barre haute
       Positioned(
-        top: 0,
-        left: 0,
-        right: 0,
+        top: 0, left: 0, right: 0,
         child: Container(
           padding: EdgeInsets.fromLTRB(4, topPad + 4, 4, 8),
           decoration: BoxDecoration(
@@ -892,20 +1063,46 @@ class _PrompterScreenState extends State<PrompterScreen>
                   ),
                   child: Row(mainAxisSize: MainAxisSize.min, children: [
                     const Icon(Icons.wifi,
-                        color: Color(0xFF6C63FF), size: 13),
+                        color: Color(0xFFD4AF37), size: 13),
                     const SizedBox(width: 4),
                     Text('${_wifi.ip}:${WifiServer.port}',
                         style: const TextStyle(
                             color: Colors.white70, fontSize: 11)),
+                    if (_authToken.isNotEmpty) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFD4AF37).withOpacity(0.25),
+                          borderRadius: BorderRadius.circular(5),
+                        ),
+                        child: Text(_authToken,
+                            style: const TextStyle(
+                                color: Color(0xFFF2D27E),
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                fontFamily: 'monospace',
+                                letterSpacing: 1.5)),
+                      ),
+                    ],
                   ]),
                 ),
               ),
             const Spacer(),
             IconButton(
+              tooltip: 'Mode mots-clés',
+              icon: Icon(Icons.text_format,
+                  color: settings.keywordsMode
+                      ? const Color(0xFFD4AF37)
+                      : Colors.white),
+              onPressed: () => context.read<SettingsProvider>().updateSettings(
+                  settings.copyWith(keywordsMode: !settings.keywordsMode)),
+            ),
+            IconButton(
               tooltip: 'Safe-zone',
               icon: Icon(Icons.crop_free,
                   color: settings.showSafeZone
-                      ? const Color(0xFF6C63FF)
+                      ? const Color(0xFFD4AF37)
                       : Colors.white),
               onPressed: () =>
                   context.read<SettingsProvider>().toggleSafeZone(),
@@ -914,7 +1111,7 @@ class _PrompterScreenState extends State<PrompterScreen>
               tooltip: 'Mode miroir',
               icon: Icon(Icons.flip,
                   color: settings.mirrorMode
-                      ? const Color(0xFF6C63FF)
+                      ? const Color(0xFFD4AF37)
                       : Colors.white),
               onPressed: () =>
                   context.read<SettingsProvider>().toggleMirror(),
@@ -939,7 +1136,7 @@ class _PrompterScreenState extends State<PrompterScreen>
         ),
       ),
 
-      // ── Slider exposition (droite)
+      // Slider exposition
       if (_cam != null && _cam!.value.isInitialized)
         Positioned(
           right: 10,
@@ -973,11 +1170,9 @@ class _PrompterScreenState extends State<PrompterScreen>
           ]),
         ),
 
-      // ── Barre basse
+      // Barre basse
       Positioned(
-        bottom: 0,
-        left: 0,
-        right: 0,
+        bottom: 0, left: 0, right: 0,
         child: Container(
           padding: EdgeInsets.fromLTRB(16, 12, 16, botPad + 16),
           decoration: BoxDecoration(
@@ -996,12 +1191,19 @@ class _PrompterScreenState extends State<PrompterScreen>
             GestureDetector(
               onTap: _togglePlay,
               child: Container(
-                width: 62,
-                height: 62,
-                decoration: const BoxDecoration(
-                    color: Color(0xFF6C63FF), shape: BoxShape.circle),
+                width: 64, height: 64,
+                decoration: BoxDecoration(
+                    color: const Color(0xFFD4AF37),
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFFD4AF37).withOpacity(0.35),
+                        blurRadius: 18,
+                        spreadRadius: 1,
+                      ),
+                    ]),
                 child: Icon(_isPlaying ? Icons.pause : Icons.play_arrow,
-                    color: Colors.white, size: 34),
+                    color: const Color(0xFF0B0B0F), size: 36),
               ),
             ),
             const SizedBox(width: 14),
@@ -1019,8 +1221,7 @@ class _PrompterScreenState extends State<PrompterScreen>
             GestureDetector(
               onTap: _toggleRecording,
               child: Container(
-                width: 52,
-                height: 52,
+                width: 52, height: 52,
                 decoration: BoxDecoration(
                   color: _isRecording
                       ? Colors.red
@@ -1054,8 +1255,7 @@ class _CtrlBtn extends StatelessWidget {
         onTap: onTap,
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Container(
-            width: 44,
-            height: 44,
+            width: 44, height: 44,
             decoration: BoxDecoration(
               color: Colors.black.withOpacity(0.5),
               shape: BoxShape.circle,
@@ -1070,41 +1270,33 @@ class _CtrlBtn extends StatelessWidget {
       );
 }
 
-class _ReadingLine extends StatelessWidget {
-  final double top;
-  const _ReadingLine({required this.top});
+class _ReadingLineRow extends StatelessWidget {
+  const _ReadingLineRow();
   @override
   Widget build(BuildContext context) {
-    return Positioned(
-      top: top,
-      left: 0,
-      right: 0,
-      child: Row(
-        children: [
-          Container(
-            width: 22,
-            height: 3,
-            decoration: BoxDecoration(
-              color: const Color(0xFF6C63FF).withOpacity(0.85),
-              borderRadius: BorderRadius.circular(2),
-            ),
+    return Row(
+      children: [
+        Container(
+          width: 22, height: 3,
+          decoration: BoxDecoration(
+            color: const Color(0xFFD4AF37).withOpacity(0.85),
+            borderRadius: BorderRadius.circular(2),
           ),
-          Expanded(
-            child: Container(
-              height: 1.5,
-              color: const Color(0xFF6C63FF).withOpacity(0.35),
-            ),
+        ),
+        Expanded(
+          child: Container(
+            height: 1.5,
+            color: const Color(0xFFD4AF37).withOpacity(0.35),
           ),
-          Container(
-            width: 22,
-            height: 3,
-            decoration: BoxDecoration(
-              color: const Color(0xFF6C63FF).withOpacity(0.85),
-              borderRadius: BorderRadius.circular(2),
-            ),
+        ),
+        Container(
+          width: 22, height: 3,
+          decoration: BoxDecoration(
+            color: const Color(0xFFD4AF37).withOpacity(0.85),
+            borderRadius: BorderRadius.circular(2),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
@@ -1115,38 +1307,33 @@ class _FocusMask extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final dark = Colors.black.withOpacity(opacity);
-    return Positioned.fill(
-      child: IgnorePointer(
-        child: Column(
-          children: [
-            Expanded(
-              flex: 1,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [dark, Colors.transparent],
-                  ),
-                ),
+    return Column(
+      children: [
+        Expanded(
+          flex: 1,
+          child: Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [dark, Colors.transparent],
               ),
             ),
-            const SizedBox(height: 0),
-            Expanded(
-              flex: 2,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [Colors.transparent, dark],
-                  ),
-                ),
-              ),
-            ),
-          ],
+          ),
         ),
-      ),
+        Expanded(
+          flex: 2,
+          child: Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Colors.transparent, dark],
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -1156,20 +1343,14 @@ class _SafeZoneOverlay extends StatelessWidget {
   const _SafeZoneOverlay({required this.size});
   @override
   Widget build(BuildContext context) {
-    // TikTok / Reels safe zone (approximative en portrait 9:16) :
-    //   Top    : 8% (handle + username)
-    //   Bottom : 22% (caption + boutons + nav)
-    //   Right  : 14% (boutons d'actions)
     final topInset = size.height * 0.08;
     final bottomInset = size.height * 0.22;
     final rightInset = size.width * 0.14;
-    return Positioned.fill(
-      child: CustomPaint(
-        painter: _SafeZonePainter(
-          topInset: topInset,
-          bottomInset: bottomInset,
-          rightInset: rightInset,
-        ),
+    return CustomPaint(
+      painter: _SafeZonePainter(
+        topInset: topInset,
+        bottomInset: bottomInset,
+        rightInset: rightInset,
       ),
     );
   }
@@ -1177,10 +1358,7 @@ class _SafeZoneOverlay extends StatelessWidget {
 
 class _SafeZonePainter extends CustomPainter {
   final double topInset, bottomInset, rightInset;
-  _SafeZonePainter(
-      {required this.topInset,
-      required this.bottomInset,
-      required this.rightInset});
+  _SafeZonePainter({required this.topInset, required this.bottomInset, required this.rightInset});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1188,25 +1366,12 @@ class _SafeZonePainter extends CustomPainter {
       ..color = Colors.yellowAccent.withOpacity(0.55)
       ..strokeWidth = 1.2
       ..style = PaintingStyle.stroke;
-
-    final rect = Rect.fromLTRB(
-      4,
-      topInset,
-      size.width - rightInset,
-      size.height - bottomInset,
-    );
+    final rect = Rect.fromLTRB(4, topInset, size.width - rightInset, size.height - bottomInset);
     _drawDashedRect(canvas, rect, paint);
-
-    // Label
     final tp = TextPainter(
       text: const TextSpan(
         text: 'SAFE ZONE',
-        style: TextStyle(
-          color: Colors.yellowAccent,
-          fontSize: 10,
-          fontWeight: FontWeight.bold,
-          letterSpacing: 1.5,
-        ),
+        style: TextStyle(color: Colors.yellowAccent, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1.5),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
@@ -1214,25 +1379,18 @@ class _SafeZonePainter extends CustomPainter {
   }
 
   void _drawDashedRect(Canvas canvas, Rect r, Paint p) {
-    const dash = 6.0;
-    const gap = 5.0;
+    const dash = 6.0; const gap = 5.0;
     void line(Offset a, Offset b) {
-      final dx = b.dx - a.dx;
-      final dy = b.dy - a.dy;
+      final dx = b.dx - a.dx; final dy = b.dy - a.dy;
       final len = (dx == 0 ? dy.abs() : dx.abs());
       double drawn = 0;
       while (drawn < len) {
         final t1 = drawn / len;
         final t2 = ((drawn + dash) / len).clamp(0.0, 1.0);
-        canvas.drawLine(
-          Offset(a.dx + dx * t1, a.dy + dy * t1),
-          Offset(a.dx + dx * t2, a.dy + dy * t2),
-          p,
-        );
+        canvas.drawLine(Offset(a.dx + dx * t1, a.dy + dy * t1), Offset(a.dx + dx * t2, a.dy + dy * t2), p);
         drawn += dash + gap;
       }
     }
-
     line(r.topLeft, r.topRight);
     line(r.topRight, r.bottomRight);
     line(r.bottomRight, r.bottomLeft);
@@ -1241,68 +1399,48 @@ class _SafeZonePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_SafeZonePainter old) =>
-      old.topInset != topInset ||
-      old.bottomInset != bottomInset ||
-      old.rightInset != rightInset;
+      old.topInset != topInset || old.bottomInset != bottomInset || old.rightInset != rightInset;
 }
 
-class _FocusReticle extends StatefulWidget {
-  final Offset position;
-  const _FocusReticle({required this.position});
+class _FocusReticleAnim extends StatefulWidget {
+  const _FocusReticleAnim();
   @override
-  State<_FocusReticle> createState() => _FocusReticleState();
+  State<_FocusReticleAnim> createState() => _FocusReticleAnimState();
 }
 
-class _FocusReticleState extends State<_FocusReticle>
+class _FocusReticleAnimState extends State<_FocusReticleAnim>
     with SingleTickerProviderStateMixin {
   late final AnimationController _ctrl;
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 700),
-    )..forward();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 700))..forward();
   }
-
   @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
+  void dispose() { _ctrl.dispose(); super.dispose(); }
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
       animation: _ctrl,
       builder: (_, __) {
         final t = _ctrl.value;
-        final scale = 1.6 - 0.6 * t; // 1.6 → 1.0
+        final scale = 1.6 - 0.6 * t;
         final opacity = (t < 0.6 ? 1.0 : (1.0 - (t - 0.6) / 0.4)).clamp(0.0, 1.0);
-        return Positioned(
-          left: widget.position.dx - 30,
-          top: widget.position.dy - 30,
-          child: Opacity(
-            opacity: opacity,
-            child: Transform.scale(
-              scale: scale,
-              child: Container(
-                width: 60,
-                height: 60,
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.yellowAccent, width: 1.4),
-                  borderRadius: BorderRadius.circular(2),
-                ),
-                child: const Center(
-                  child: SizedBox(
-                    width: 8,
-                    height: 8,
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: Colors.yellowAccent,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
+        return Opacity(
+          opacity: opacity,
+          child: Transform.scale(
+            scale: scale,
+            child: Container(
+              width: 60, height: 60,
+              decoration: BoxDecoration(
+                border: Border.all(color: Colors.yellowAccent, width: 1.4),
+                borderRadius: BorderRadius.circular(2),
+              ),
+              child: const Center(
+                child: SizedBox(
+                  width: 8, height: 8,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(color: Colors.yellowAccent, shape: BoxShape.circle),
                   ),
                 ),
               ),

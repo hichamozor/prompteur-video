@@ -1,7 +1,7 @@
+import 'package:dynamic_color/dynamic_color.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'providers/scripts_provider.dart';
 import 'providers/settings_provider.dart';
 import 'screens/home_screen.dart';
 
@@ -13,47 +13,53 @@ Future<void> main() async {
     DeviceOrientation.landscapeRight,
   ]);
 
-  // Pré-charge settings + scripts pour éviter l'écran blanc / flash de defaults
   final settingsProvider = SettingsProvider();
-  final scriptsProvider = ScriptsProvider();
-  await Future.wait([
-    settingsProvider.load(),
-    scriptsProvider.load(),
-  ]);
+  await settingsProvider.load();
 
-  runApp(PrompterApp(
-    settingsProvider: settingsProvider,
-    scriptsProvider: scriptsProvider,
-  ));
+  runApp(PrompterApp(settingsProvider: settingsProvider));
 }
 
 class PrompterApp extends StatelessWidget {
   final SettingsProvider settingsProvider;
-  final ScriptsProvider scriptsProvider;
-  const PrompterApp({
-    super.key,
-    required this.settingsProvider,
-    required this.scriptsProvider,
-  });
+  const PrompterApp({super.key, required this.settingsProvider});
 
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider.value(value: settingsProvider),
-        ChangeNotifierProvider.value(value: scriptsProvider),
       ],
-      child: MaterialApp(
-        title: 'Prompteur Vidéo',
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData(
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: const Color(0xFF6C63FF),
-            brightness: Brightness.dark,
-          ),
-          useMaterial3: true,
-        ),
-        home: const HomeScreen(),
+      child: Consumer<SettingsProvider>(
+        builder: (context, settings, _) {
+          return DynamicColorBuilder(
+            builder: (lightDynamic, darkDynamic) {
+              ColorScheme scheme;
+              if (settings.settings.dynamicColors && darkDynamic != null) {
+                scheme = darkDynamic.harmonized();
+              } else {
+                scheme = ColorScheme.fromSeed(
+                  seedColor: const Color(0xFFD4AF37),
+                  brightness: Brightness.dark,
+                );
+              }
+              return MaterialApp(
+                title: 'Prompteur Vidéo',
+                debugShowCheckedModeBanner: false,
+                theme: ThemeData(
+                  colorScheme: scheme,
+                  useMaterial3: true,
+                  pageTransitionsTheme: const PageTransitionsTheme(
+                    builders: {
+                      TargetPlatform.android: ZoomPageTransitionsBuilder(),
+                      TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+                    },
+                  ),
+                ),
+                home: const HomeScreen(),
+              );
+            },
+          );
+        },
       ),
     );
   }

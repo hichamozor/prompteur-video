@@ -100,4 +100,35 @@ class PrompterMarkdown {
         .map((l) => l.replaceAll(RegExp(r'^\s*#+\s+'), '').replaceAll('**', ''))
         .join('\n');
   }
+
+  /// Extrait les "mots-clés" : tous les passages entre **double étoile**.
+  /// Préserve l'ordre d'apparition et les sections (`# Section`) comme labels.
+  /// Format de sortie : alternance Section (string + bold:false) puis keyword (bold:true).
+  static List<KeywordItem> extractKeywords(String text) {
+    final out = <KeywordItem>[];
+    final lines = text.split('\n');
+    final boldRe = RegExp(r'\*\*(.+?)\*\*');
+    String? lastSection;
+    for (final line in lines) {
+      final trimmed = line.trimLeft();
+      if (trimmed.startsWith('//')) continue;
+      final secMatch = RegExp(r'^\s*#+\s+(.+)$').firstMatch(line);
+      if (secMatch != null) {
+        lastSection = secMatch.group(1)!.trim();
+        continue;
+      }
+      for (final m in boldRe.allMatches(line)) {
+        final kw = m.group(1)!.trim();
+        if (kw.isEmpty) continue;
+        out.add(KeywordItem(text: kw, section: lastSection));
+      }
+    }
+    return out;
+  }
+}
+
+class KeywordItem {
+  final String text;
+  final String? section;
+  const KeywordItem({required this.text, this.section});
 }

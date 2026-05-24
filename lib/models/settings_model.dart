@@ -28,6 +28,9 @@ class PrompterSettings {
 
   // Lecture
   final int wpm; // mots/minute pour estimation du temps
+  final bool slowOnHardWords; // ralentir auto sur mots durs (≥4 syllabes)
+  final bool keywordsMode;    // afficher uniquement les **mots-cles** en grand
+  final bool dynamicColors;   // suivre les couleurs Material You du systeme
 
   const PrompterSettings({
     this.fontSize = 42.0,
@@ -50,6 +53,9 @@ class PrompterSettings {
     this.videoResolution = 'veryHigh',
     this.targetFps = 30,
     this.wpm = 150,
+    this.slowOnHardWords = false,
+    this.keywordsMode = false,
+    this.dynamicColors = false,
   });
 
   PrompterSettings copyWith({
@@ -73,6 +79,9 @@ class PrompterSettings {
     String? videoResolution,
     int? targetFps,
     int? wpm,
+    bool? slowOnHardWords,
+    bool? keywordsMode,
+    bool? dynamicColors,
   }) {
     return PrompterSettings(
       fontSize: fontSize ?? this.fontSize,
@@ -95,6 +104,9 @@ class PrompterSettings {
       videoResolution: videoResolution ?? this.videoResolution,
       targetFps: targetFps ?? this.targetFps,
       wpm: wpm ?? this.wpm,
+      slowOnHardWords: slowOnHardWords ?? this.slowOnHardWords,
+      keywordsMode: keywordsMode ?? this.keywordsMode,
+      dynamicColors: dynamicColors ?? this.dynamicColors,
     );
   }
 
@@ -119,6 +131,9 @@ class PrompterSettings {
         'videoResolution': videoResolution,
         'targetFps': targetFps,
         'wpm': wpm,
+        'slowOnHardWords': slowOnHardWords,
+        'keywordsMode': keywordsMode,
+        'dynamicColors': dynamicColors,
       };
 
   factory PrompterSettings.fromJson(Map<String, dynamic> j) {
@@ -150,6 +165,9 @@ class PrompterSettings {
       videoResolution: j['videoResolution'] as String? ?? d.videoResolution,
       targetFps: j['targetFps'] as int? ?? d.targetFps,
       wpm: j['wpm'] as int? ?? d.wpm,
+      slowOnHardWords: j['slowOnHardWords'] as bool? ?? d.slowOnHardWords,
+      keywordsMode: j['keywordsMode'] as bool? ?? d.keywordsMode,
+      dynamicColors: j['dynamicColors'] as bool? ?? d.dynamicColors,
     );
   }
 

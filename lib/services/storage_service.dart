@@ -1,14 +1,12 @@
 import 'dart:convert';
-import 'dart:io';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../models/script_model.dart';
 import 'logger.dart';
 
+/// Persistance minimale : settings + token d'auth WiFi.
+/// Le contenu du prompteur n'est plus persisté (poussé via WS à chaque session).
 class StorageService {
   static const _keySettings = 'settings_json';
-  static const _keyDraft = 'editor_draft';
-  static const _keyLastOpenedScriptId = 'last_opened_script_id';
+  static const _keyAuthToken = 'auth_token';
 
   static SharedPreferences? _prefs;
   static Future<SharedPreferences> get _p async {
@@ -39,69 +37,22 @@ class StorageService {
     }
   }
 
-  // ── Scripts library
+  // ── Auth token (pour la télécommande PC)
 
-  static Future<File> _scriptsFile() async {
-    final dir = await getApplicationDocumentsDirectory();
-    return File('${dir.path}/scripts.json');
-  }
-
-  static Future<List<Script>> loadScripts() async {
-    try {
-      final f = await _scriptsFile();
-      if (!await f.exists()) return [];
-      final raw = await f.readAsString();
-      if (raw.trim().isEmpty) return [];
-      final list = jsonDecode(raw) as List<dynamic>;
-      return list
-          .map((e) => Script.fromJson(e as Map<String, dynamic>))
-          .toList();
-    } catch (e, st) {
-      Log.e('Storage', 'failed to load scripts', e, st);
-      return [];
+  static Future<String> getOrCreateAuthToken() async {
+    final p = await _p;
+    var token = p.getString(_keyAuthToken);
+    if (token == null || token.length != 6) {
+      // 6 chiffres
+      final rng = DateTime.now().millisecondsSinceEpoch;
+      token = ((rng % 900000) + 100000).toString();
+      await p.setString(_keyAuthToken, token);
     }
+    return token;
   }
 
-  static Future<void> saveScripts(List<Script> scripts) async {
-    try {
-      final f = await _scriptsFile();
-      final list = scripts.map((s) => s.toJson()).toList();
-      await f.writeAsString(jsonEncode(list));
-    } catch (e, st) {
-      Log.e('Storage', 'failed to save scripts', e, st);
-    }
-  }
-
-  // ── Editor draft (work-in-progress sans script associé)
-
-  static Future<String?> loadDraft() async {
+  static Future<void> regenAuthToken() async {
     final p = await _p;
-    return p.getString(_keyDraft);
-  }
-
-  static Future<void> saveDraft(String text) async {
-    final p = await _p;
-    await p.setString(_keyDraft, text);
-  }
-
-  static Future<void> clearDraft() async {
-    final p = await _p;
-    await p.remove(_keyDraft);
-  }
-
-  // ── Last opened script
-
-  static Future<String?> getLastOpenedScriptId() async {
-    final p = await _p;
-    return p.getString(_keyLastOpenedScriptId);
-  }
-
-  static Future<void> setLastOpenedScriptId(String? id) async {
-    final p = await _p;
-    if (id == null) {
-      await p.remove(_keyLastOpenedScriptId);
-    } else {
-      await p.setString(_keyLastOpenedScriptId, id);
-    }
+    await p.remove(_keyAuthToken);
   }
 }

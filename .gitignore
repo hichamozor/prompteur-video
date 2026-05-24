@@ -1,0 +1,22 @@
+# Build local (install_usb.bat)
+.build/
+
+# APK genere
+app-release.apk
+
+# Flutter / Dart
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+build/
+
+# Android
+android/app/debug/
+android/app/profile/
+android/app/release/
+*.iml
+
+# IDE
+.idea/
+.vscode/

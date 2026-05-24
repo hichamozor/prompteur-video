@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/settings_model.dart';
 import '../providers/settings_provider.dart';
+import 'logs_screen.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -13,9 +14,9 @@ class SettingsScreen extends StatelessWidget {
     void upd(PrompterSettings ns) => provider.updateSettings(ns);
 
     return Scaffold(
-      backgroundColor: const Color(0xFF1A1A2E),
+      backgroundColor: const Color(0xFF0B0B0F),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF1A1A2E),
+        backgroundColor: const Color(0xFF0B0B0F),
         elevation: 0,
         title:
             const Text('Paramètres', style: TextStyle(color: Colors.white)),
@@ -59,12 +60,12 @@ class SettingsScreen extends StatelessWidget {
             _Div(),
             ListTile(
               leading: const Icon(Icons.font_download,
-                  color: Color(0xFF6C63FF), size: 20),
+                  color: Color(0xFFD4AF37), size: 20),
               title: const Text('Police',
                   style: TextStyle(color: Colors.white70, fontSize: 14)),
               trailing: DropdownButton<String>(
                 value: s.fontFamily,
-                dropdownColor: const Color(0xFF16213E),
+                dropdownColor: const Color(0xFF16161D),
                 style: const TextStyle(color: Colors.white),
                 underline: const SizedBox(),
                 items: const [
@@ -84,7 +85,7 @@ class SettingsScreen extends StatelessWidget {
             _Div(),
             ListTile(
               leading: const Icon(Icons.format_align_center,
-                  color: Color(0xFF6C63FF), size: 20),
+                  color: Color(0xFFD4AF37), size: 20),
               title: const Text('Alignement',
                   style: TextStyle(color: Colors.white70, fontSize: 14)),
               trailing: Row(
@@ -112,7 +113,7 @@ class SettingsScreen extends StatelessWidget {
           _Card([
             ListTile(
               leading: const Icon(Icons.color_lens,
-                  color: Color(0xFF6C63FF), size: 20),
+                  color: Color(0xFFD4AF37), size: 20),
               title: const Text('Couleur du texte',
                   style: TextStyle(color: Colors.white70, fontSize: 14)),
               trailing: _ColorRow(
@@ -131,7 +132,7 @@ class SettingsScreen extends StatelessWidget {
             _Div(),
             ListTile(
               leading: const Icon(Icons.rectangle,
-                  color: Color(0xFF6C63FF), size: 20),
+                  color: Color(0xFFD4AF37), size: 20),
               title: const Text('Fond du texte',
                   style: TextStyle(color: Colors.white70, fontSize: 14)),
               trailing: _ColorRow(
@@ -174,12 +175,12 @@ class SettingsScreen extends StatelessWidget {
             _Div(),
             ListTile(
               leading: const Icon(Icons.timer,
-                  color: Color(0xFF6C63FF), size: 20),
+                  color: Color(0xFFD4AF37), size: 20),
               title: const Text('Compte à rebours',
                   style: TextStyle(color: Colors.white70, fontSize: 14)),
               trailing: DropdownButton<int>(
                 value: s.countdownSeconds,
-                dropdownColor: const Color(0xFF16213E),
+                dropdownColor: const Color(0xFF16161D),
                 style: const TextStyle(color: Colors.white),
                 underline: const SizedBox(),
                 items: const [
@@ -201,6 +202,13 @@ class SettingsScreen extends StatelessWidget {
               divs: 28,
               display: '${s.wpm} wpm',
               onChanged: (v) => upd(s.copyWith(wpm: v.round())),
+            ),
+            _Div(),
+            _Switch(
+              Icons.psychology_outlined,
+              'Ralentir sur mots difficiles',
+              s.slowOnHardWords,
+              (v) => upd(s.copyWith(slowOnHardWords: v)),
             ),
           ]),
 
@@ -240,12 +248,12 @@ class SettingsScreen extends StatelessWidget {
           _Card([
             ListTile(
               leading: const Icon(Icons.hd,
-                  color: Color(0xFF6C63FF), size: 20),
+                  color: Color(0xFFD4AF37), size: 20),
               title: const Text('Résolution',
                   style: TextStyle(color: Colors.white70, fontSize: 14)),
               trailing: DropdownButton<String>(
                 value: s.videoResolution,
-                dropdownColor: const Color(0xFF16213E),
+                dropdownColor: const Color(0xFF16161D),
                 style: const TextStyle(color: Colors.white),
                 underline: const SizedBox(),
                 items: const [
@@ -262,14 +270,14 @@ class SettingsScreen extends StatelessWidget {
             _Div(),
             ListTile(
               leading: const Icon(Icons.speed,
-                  color: Color(0xFF6C63FF), size: 20),
+                  color: Color(0xFFD4AF37), size: 20),
               title: const Text('Images / seconde',
                   style: TextStyle(color: Colors.white70, fontSize: 14)),
               subtitle: const Text('Selon les capacités du téléphone',
                   style: TextStyle(color: Colors.white38, fontSize: 11)),
               trailing: DropdownButton<int>(
                 value: s.targetFps,
-                dropdownColor: const Color(0xFF16213E),
+                dropdownColor: const Color(0xFF16161D),
                 style: const TextStyle(color: Colors.white),
                 underline: const SizedBox(),
                 items: const [
@@ -302,6 +310,28 @@ class SettingsScreen extends StatelessWidget {
                 "Garder l'écran allumé",
                 s.keepScreenOn,
                 (v) => upd(s.copyWith(keepScreenOn: v))),
+            _Div(),
+            _Switch(
+                Icons.palette_outlined,
+                'Couleurs du système (Material You)',
+                s.dynamicColors,
+                (v) => upd(s.copyWith(dynamicColors: v))),
+          ]),
+
+          // ── DEBUG
+          _Header('DEBUG'),
+          _Card([
+            ListTile(
+              leading: const Icon(Icons.bug_report_outlined,
+                  color: Color(0xFFD4AF37), size: 20),
+              title: const Text('Logs WiFi',
+                  style: TextStyle(color: Colors.white, fontSize: 14)),
+              subtitle: const Text('Voir les connexions / erreurs serveur',
+                  style: TextStyle(color: Colors.white38, fontSize: 11)),
+              trailing: const Icon(Icons.chevron_right, color: Colors.white38),
+              onTap: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const LogsScreen())),
+            ),
           ]),
 
           // ── ASTUCES
@@ -318,10 +348,20 @@ class SettingsScreen extends StatelessWidget {
                           '• Long press : verrouiller/déverrouiller l\'expo\n'
                           '• Pinch : zoom'),
                   SizedBox(height: 10),
+                  _Tip('Workflow PC → tel',
+                      '• Lance « Démarrer » depuis l\'accueil\n'
+                          '• Ouvre http://IP:8080 sur le PC (l\'IP s\'affiche en haut)\n'
+                          '• Saisis le code à 6 chiffres\n'
+                          '• Colle ton script dans la zone de texte'),
+                  SizedBox(height: 10),
                   _Tip('Markdown du script',
                       '• **gras** pour insister\n'
                           '• # Titre de section\n'
                           '• // commentaire (visible mais pas compté)'),
+                  SizedBox(height: 10),
+                  _Tip('Vidéos enregistrées',
+                      '• Album « Prompteur » dans ta galerie système\n'
+                          '• Sauvegarde Google Photos auto si activée'),
                 ],
               ),
             ),
@@ -345,7 +385,7 @@ class _Tip extends StatelessWidget {
       children: [
         Text(title,
             style: const TextStyle(
-                color: Color(0xFF6C63FF),
+                color: Color(0xFFD4AF37),
                 fontSize: 12,
                 fontWeight: FontWeight.bold,
                 letterSpacing: 1.2)),
@@ -368,7 +408,7 @@ class _Header extends StatelessWidget {
         padding: const EdgeInsets.only(top: 20, bottom: 6, left: 4),
         child: Text(title,
             style: const TextStyle(
-                color: Color(0xFF6C63FF),
+                color: Color(0xFFD4AF37),
                 fontSize: 11,
                 fontWeight: FontWeight.bold,
                 letterSpacing: 1.8)),
@@ -380,7 +420,7 @@ class _Card extends StatelessWidget {
   const _Card(this.children);
   @override
   Widget build(BuildContext context) => Card(
-        color: const Color(0xFF16213E),
+        color: const Color(0xFF16161D),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 4),
@@ -414,7 +454,7 @@ class _Slider extends StatelessWidget {
   Widget build(BuildContext context) => Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
         child: Row(children: [
-          Icon(icon, color: const Color(0xFF6C63FF), size: 20),
+          Icon(icon, color: const Color(0xFFD4AF37), size: 20),
           const SizedBox(width: 10),
           SizedBox(
               width: 110,
@@ -424,8 +464,8 @@ class _Slider extends StatelessWidget {
           Expanded(
             child: SliderTheme(
               data: const SliderThemeData(
-                  activeTrackColor: Color(0xFF6C63FF),
-                  thumbColor: Color(0xFF6C63FF),
+                  activeTrackColor: Color(0xFFD4AF37),
+                  thumbColor: Color(0xFFD4AF37),
                   inactiveTrackColor: Colors.white24,
                   trackHeight: 2,
                   thumbShape: RoundSliderThumbShape(enabledThumbRadius: 7)),
@@ -454,13 +494,13 @@ class _Switch extends StatelessWidget {
   const _Switch(this.icon, this.label, this.value, this.onChanged);
   @override
   Widget build(BuildContext context) => ListTile(
-        leading: Icon(icon, color: const Color(0xFF6C63FF), size: 20),
+        leading: Icon(icon, color: const Color(0xFFD4AF37), size: 20),
         title: Text(label,
             style: const TextStyle(color: Colors.white70, fontSize: 14)),
         trailing: Switch(
             value: value,
             onChanged: onChanged,
-            activeColor: const Color(0xFF6C63FF)),
+            activeColor: const Color(0xFFD4AF37)),
       );
 }
 
@@ -485,7 +525,7 @@ class _ColorRow extends StatelessWidget {
                         shape: BoxShape.circle,
                         border: Border.all(
                             color: selected.value == c.value
-                                ? const Color(0xFF6C63FF)
+                                ? const Color(0xFFD4AF37)
                                 : Colors.white30,
                             width: selected.value == c.value ? 2.5 : 1)),
                   ),
@@ -507,11 +547,11 @@ class _AlignBtn extends StatelessWidget {
           height: 32,
           margin: const EdgeInsets.only(left: 4),
           decoration: BoxDecoration(
-              color: active ? const Color(0xFF6C63FF) : Colors.transparent,
+              color: active ? const Color(0xFFD4AF37) : Colors.transparent,
               borderRadius: BorderRadius.circular(6),
               border: Border.all(
                   color:
-                      active ? const Color(0xFF6C63FF) : Colors.white30)),
+                      active ? const Color(0xFFD4AF37) : Colors.white30)),
           child: Icon(icon, color: Colors.white, size: 18),
         ),
       );

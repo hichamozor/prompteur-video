@@ -5,57 +5,122 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>Prompteur — Télécommande</title>
 <style>
+  :root{
+    --bg:#0B0B0F;
+    --bg-raised:#13131A;
+    --surface:#16161D;
+    --surface-hi:#1F1F28;
+    --border:rgba(255,255,255,.08);
+    --border-strong:rgba(255,255,255,.14);
+    --text:#FFFFFF;
+    --text-mut:rgba(255,255,255,.65);
+    --text-dim:rgba(255,255,255,.35);
+    --gold:#D4AF37;
+    --gold-light:#F2D27E;
+    --gold-dark:#8B6F2A;
+    --gold-glow:rgba(212,175,55,.18);
+    --rec:#E53935;
+    --ok:#4CAF50;
+    --warn:#FFA726;
+  }
   *{box-sizing:border-box;margin:0;padding:0}
-  body{background:#1A1A2E;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  body{background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
     min-height:100vh;display:flex;flex-direction:column;align-items:center;
-    padding:16px;gap:12px;-webkit-tap-highlight-color:transparent}
-  h1{font-size:18px;color:#6C63FF}
-  #st{font-size:12px;color:#666}
-  .preview-wrap{position:relative;width:200px;height:356px;
-    background:#0a0a14;border-radius:12px;overflow:hidden;
-    border:1px solid #2a2a4a;flex-shrink:0;box-shadow:0 6px 30px rgba(108,99,255,.12)}
+    padding:18px;gap:14px;-webkit-tap-highlight-color:transparent}
+  h1{font-size:14px;color:var(--gold);font-weight:700;letter-spacing:2.5px;
+    text-transform:uppercase}
+  #st{font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:6px}
+  .preview-wrap{position:relative;width:210px;height:374px;
+    background:#000;border-radius:14px;overflow:hidden;
+    border:1px solid var(--border-strong);flex-shrink:0;
+    box-shadow:0 12px 36px rgba(0,0,0,.6),0 0 0 1px var(--gold-glow)}
   #stream-img{width:100%;height:100%;object-fit:cover;display:block}
-  #rec-overlay{position:absolute;inset:0;background:rgba(0,0,0,.78);
+  #rec-overlay{position:absolute;inset:0;background:rgba(0,0,0,.82);
     display:none;align-items:center;justify-content:center;
-    color:#ff4444;font-weight:bold;font-size:14px;text-align:center;padding:10px;
-    flex-direction:column;gap:6px}
-  #rec-overlay .dot{width:14px;height:14px;border-radius:50%;background:#ff4444;
+    color:var(--rec);font-weight:bold;font-size:14px;text-align:center;padding:10px;
+    flex-direction:column;gap:8px}
+  #rec-overlay .dot{width:14px;height:14px;border-radius:50%;background:var(--rec);
     animation:pulse 1.2s ease-in-out infinite}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
   .info{display:flex;justify-content:space-between;width:100%;max-width:480px;
-    font-size:13px;color:#888}
-  .info b{color:#fff}
-  .pb{width:100%;max-width:480px;background:#16213E;border-radius:99px;height:6px}
-  .pf{height:6px;background:linear-gradient(90deg,#6C63FF,#9D8DFF);border-radius:99px;width:0%;transition:width .4s}
+    font-size:13px;color:var(--text-dim)}
+  .info b{color:var(--text)}
+  .pb{width:100%;max-width:480px;background:var(--surface);border-radius:99px;height:5px;
+    overflow:hidden}
+  .pf{height:100%;background:linear-gradient(90deg,var(--gold-dark),var(--gold),var(--gold-light));
+    border-radius:99px;width:0%;transition:width .4s}
   .g{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;width:100%;max-width:480px}
-  .b{background:#16213E;border:1.5px solid #2a2a4a;border-radius:12px;
-    color:#fff;padding:14px 8px;font-size:13px;cursor:pointer;
-    display:flex;flex-direction:column;align-items:center;gap:4px;
-    transition:background .12s,transform .08s,border-color .12s;user-select:none}
-  .b:hover{background:#6C63FF;border-color:#6C63FF}
-  .b:active{transform:scale(.94)}
-  .b .i{font-size:22px}
+  .b{background:var(--surface);border:1px solid var(--border);border-radius:14px;
+    color:var(--text);padding:14px 8px;font-size:13px;cursor:pointer;
+    display:flex;flex-direction:column;align-items:center;gap:6px;
+    transition:background .15s,transform .08s,border-color .15s,color .15s;
+    user-select:none;font-weight:500;letter-spacing:.3px}
+  .b:hover{background:var(--surface-hi);border-color:var(--gold);color:var(--gold-light)}
+  .b:active{transform:scale(.96)}
+  .b .i{font-size:22px;color:var(--gold)}
+  .b:hover .i{color:var(--gold-light)}
+  .b:disabled{opacity:.35;cursor:not-allowed}
+  .b:disabled:hover{background:var(--surface);border-color:var(--border);color:var(--text)}
   .full{grid-column:1/-1}
-  .rec{border-color:#ff4444}
-  .rec:hover,.rec.on{background:#cc0000;border-color:#ff4444}
-  .kbd{color:#444;font-size:11px;text-align:center;line-height:2.2;max-width:480px;margin-top:4px}
-  kbd{background:#16213E;padding:2px 7px;border-radius:5px;
-    color:#888;border:1px solid #333;font-size:11px;font-family:inherit}
-  .script-section{width:100%;max-width:480px;margin-top:8px}
-  .script-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
-  .script-label{color:#6C63FF;font-size:11px;font-weight:bold;letter-spacing:1.5px}
-  .script-sync{color:#444;font-size:11px}
-  .script-sync.ok{color:#4CAF50}
-  .script-sync.warn{color:#FFA726}
-  textarea#script-area{width:100%;height:240px;background:#16213E;color:#fff;
-    border:1.5px solid #2a2a4a;border-radius:12px;padding:12px;font-size:14px;
-    resize:vertical;line-height:1.6;font-family:inherit;outline:none;
-    transition:border-color .2s}
-  textarea#script-area:focus{border-color:#6C63FF}
-  .hint{color:#444;font-size:10px;margin-top:6px;line-height:1.5}
+  .rec{border-color:rgba(229,57,53,.4)}
+  .rec .i{color:var(--rec)}
+  .rec:hover{background:rgba(229,57,53,.12);border-color:var(--rec);color:var(--rec)}
+  .rec:hover .i{color:var(--rec)}
+  .rec.on{background:var(--rec);border-color:var(--rec);color:#fff}
+  .rec.on .i{color:#fff}
+  .kbd{color:var(--text-dim);font-size:11px;text-align:center;line-height:2.4;
+    max-width:480px;margin-top:2px}
+  kbd{background:var(--surface);padding:3px 8px;border-radius:6px;
+    color:var(--text-mut);border:1px solid var(--border);font-size:11px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .script-section{width:100%;max-width:480px;margin-top:6px}
+  .script-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+  .script-label{color:var(--gold);font-size:11px;font-weight:700;letter-spacing:1.8px}
+  .script-sync{color:var(--text-dim);font-size:11px;font-variant-numeric:tabular-nums}
+  .script-sync.ok{color:var(--ok)}
+  .script-sync.warn{color:var(--warn)}
+  textarea#script-area{width:100%;height:240px;background:var(--surface);color:var(--text);
+    border:1px solid var(--border);border-radius:14px;padding:14px;font-size:14px;
+    resize:vertical;line-height:1.65;font-family:inherit;outline:none;
+    transition:border-color .2s,box-shadow .2s}
+  textarea#script-area:focus{border-color:var(--gold);box-shadow:0 0 0 3px var(--gold-glow)}
+  .hint{color:var(--text-dim);font-size:11px;margin-top:8px;line-height:1.7}
+  /* Auth modal */
+  #auth-overlay{position:fixed;inset:0;background:rgba(0,0,0,.85);
+    display:none;align-items:center;justify-content:center;z-index:100;
+    backdrop-filter:blur(8px)}
+  #auth-overlay.show{display:flex}
+  .auth-box{background:var(--surface);border:1px solid var(--border-strong);border-radius:18px;
+    padding:28px 24px;width:90%;max-width:340px;text-align:center;
+    box-shadow:0 25px 60px rgba(0,0,0,.7),0 0 0 1px var(--gold-glow)}
+  .auth-box h2{color:var(--gold);font-size:13px;letter-spacing:2.5px;margin-bottom:8px;font-weight:700}
+  .auth-box p{color:var(--text-mut);font-size:13px;margin-bottom:18px;line-height:1.55}
+  #auth-input{background:var(--bg);color:var(--text);font-size:26px;letter-spacing:10px;
+    text-align:center;border:1.5px solid var(--border);border-radius:12px;
+    padding:14px;width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;outline:none;
+    transition:border-color .2s,box-shadow .2s}
+  #auth-input:focus{border-color:var(--gold);box-shadow:0 0 0 3px var(--gold-glow)}
+  #auth-error{color:var(--rec);font-size:12px;margin-top:10px;min-height:16px}
+  #auth-submit{margin-top:16px;background:var(--gold);color:var(--bg);border:none;
+    border-radius:12px;padding:14px;width:100%;font-size:14px;font-weight:700;
+    cursor:pointer;letter-spacing:1.5px;transition:background .15s}
+  #auth-submit:hover:not(:disabled){background:var(--gold-light)}
+  #auth-submit:disabled{opacity:.35;cursor:not-allowed}
 </style>
 </head>
 <body>
+
+<div id="auth-overlay">
+  <div class="auth-box">
+    <h2>CODE PROMPTEUR</h2>
+    <p>Saisis le code à 6 chiffres affiché sur l'écran du téléphone.</p>
+    <input id="auth-input" type="tel" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="------">
+    <div id="auth-error"></div>
+    <button id="auth-submit" disabled>VALIDER</button>
+  </div>
+</div>
+
 <h1>Prompteur — Télécommande</h1>
 <div id="st">Connexion…</div>
 
@@ -78,8 +143,8 @@
   <button class="b" onclick="s('rewind2')"><span class="i">&#8249;&#8249;</span>-2 s</button>
   <button class="b" id="bp" onclick="s('toggle')"><span class="i" id="ip">&#9646;&#9646;</span><span id="lp">PAUSE</span></button>
   <button class="b" onclick="s('home')"><span class="i">&#9198;</span>DÉBUT</button>
-  <button class="b" onclick="s('speed-')"><span class="i">&#128022;</span>LENT</button>
-  <button class="b" onclick="s('speed+')"><span class="i">&#128007;</span>VITE</button>
+  <button class="b" onclick="s('speed-')"><span class="i">&minus;</span>LENT</button>
+  <button class="b" onclick="s('speed+')"><span class="i">+</span>VITE</button>
   <button class="b" onclick="s('rewind2')"><span class="i">&#8617;</span>RETOUR</button>
   <button class="b rec full" id="br" onclick="s('rec')">
     <span class="i" id="ir">&#9210;</span>
@@ -90,6 +155,7 @@
 <div class="kbd">
   <kbd>Espace</kbd> Pause/Play &nbsp;
   <kbd>&larr;</kbd> -2 s &nbsp;
+  <kbd>&rarr;</kbd> +2 s &nbsp;
   <kbd>&uarr;</kbd> + Vite &nbsp;
   <kbd>&darr;</kbd> - Lent &nbsp;
   <kbd>Home</kbd> Début &nbsp;
@@ -99,150 +165,187 @@
 <div class="script-section">
   <div class="script-header">
     <span class="script-label">SCRIPT</span>
-    <span class="script-sync" id="sync-st">En attente…</span>
+    <span class="script-sync" id="sync-st">—</span>
   </div>
-  <textarea id="script-area" placeholder="Colle ton script ici (depuis Google Docs, l'assistant, etc.)&#10;&#10;Le texte est synchronisé automatiquement avec le téléphone dès que tu arrêtes de taper."></textarea>
+  <textarea id="script-area" placeholder="Colle ton script ici. Sync auto vers le téléphone."></textarea>
   <div class="hint">Astuces : <kbd>**gras**</kbd> · <kbd># Section</kbd> · <kbd>// commentaire perso</kbd></div>
 </div>
 
 <script>
 (function(){
-  var ws = null;
-  var reconnectDelay = 800;
-  var reconnectTimer = null;
-  var heartbeatTimer = null;
-  var lastSentScript = null;
-  var scriptDebounce = null;
+  var ws=null, reconnectDelay=600, reconnectTimer=null, heartbeatTimer=null;
+  var lastSentScript=null, scriptDebounce=null;
+  var token=localStorage.getItem('promptToken')||'';
+  var isAuthed=false;
 
-  function $(id){ return document.getElementById(id); }
-  var stEl = $('st');
-  var syncEl = $('sync-st');
-  var ta = $('script-area');
+  function $(id){return document.getElementById(id);}
+  var stEl=$('st'), syncEl=$('sync-st'), ta=$('script-area');
+  var authOverlay=$('auth-overlay'), authInput=$('auth-input'),
+      authError=$('auth-error'), authSubmit=$('auth-submit');
 
-  function setStatus(connected){
-    if(connected){
-      stEl.innerHTML = '<span style="color:#4CAF50">&#9679;</span> Connecté';
-    } else {
-      stEl.innerHTML = '<span style="color:#f44">&#9679;</span> Déconnecté — reconnexion…';
-    }
+  function setStatus(text,color){
+    var dot='<span style="color:'+color+'">&#9679;</span>';
+    stEl.innerHTML=dot+' '+text;
+  }
+  function setSyncOk(){syncEl.textContent='Synchronisé ✓';syncEl.className='script-sync ok';}
+  function setSyncWarn(t){syncEl.textContent=t;syncEl.className='script-sync warn';}
+
+  function showAuth(err){
+    authOverlay.classList.add('show');
+    authError.textContent=err||'';
+    authInput.focus();
+  }
+  function hideAuth(){
+    authOverlay.classList.remove('show');
+    authError.textContent='';
   }
 
-  function setSyncOk(){ syncEl.textContent = 'Synchronisé ✓'; syncEl.className = 'script-sync ok'; }
-  function setSyncWarn(msg){ syncEl.textContent = msg; syncEl.className = 'script-sync warn'; }
+  authInput.addEventListener('input',function(){
+    authInput.value=authInput.value.replace(/\D/g,'').slice(0,6);
+    authSubmit.disabled=authInput.value.length!==6;
+  });
+  authInput.addEventListener('keydown',function(e){
+    if(e.code==='Enter'&&!authSubmit.disabled) authSubmit.click();
+  });
+  authSubmit.addEventListener('click',function(){
+    if(authInput.value.length!==6||!ws||ws.readyState!==1) return;
+    token=authInput.value;
+    ws.send('auth:'+token);
+  });
 
   function connect(){
-    if(reconnectTimer){ clearTimeout(reconnectTimer); reconnectTimer = null; }
-    try {
-      ws = new WebSocket('ws://' + location.host + '/ws');
-    } catch (e) {
-      scheduleReconnect();
-      return;
-    }
-    ws.onopen = function(){
-      setStatus(true);
-      reconnectDelay = 800;
-      // heartbeat léger pour ne pas s'endormir
-      if(heartbeatTimer) clearInterval(heartbeatTimer);
-      heartbeatTimer = setInterval(function(){
-        if(ws && ws.readyState === 1) ws.send('ping');
-      }, 12000);
-    };
-    ws.onclose = function(){
-      setStatus(false);
-      if(heartbeatTimer){ clearInterval(heartbeatTimer); heartbeatTimer = null; }
-      scheduleReconnect();
-    };
-    ws.onerror = function(){
-      try { ws.close(); } catch(_) {}
-    };
-    ws.onmessage = onMessage;
-  }
+    if(reconnectTimer){clearTimeout(reconnectTimer);reconnectTimer=null;}
+    setStatus('Connexion…','rgba(255,255,255,.4)');
+    try{ws=new WebSocket('ws://'+location.host+'/ws');}
+    catch(e){scheduleReconnect();return;}
 
+    ws.onopen=function(){
+      setStatus('Connecté — auth…','rgba(255,255,255,.4)');
+      reconnectDelay=600;
+      if(heartbeatTimer)clearInterval(heartbeatTimer);
+      heartbeatTimer=setInterval(function(){
+        if(ws&&ws.readyState===1) ws.send('ping');
+      },10000);
+    };
+    ws.onclose=function(){
+      isAuthed=false;
+      setStatus('Déconnecté — reconnexion…','#E53935');
+      if(heartbeatTimer){clearInterval(heartbeatTimer);heartbeatTimer=null;}
+      scheduleReconnect();
+    };
+    ws.onerror=function(){try{ws.close();}catch(_){}};
+    ws.onmessage=onMessage;
+  }
   function scheduleReconnect(){
-    if(reconnectTimer) return;
-    reconnectTimer = setTimeout(function(){
-      reconnectTimer = null;
-      reconnectDelay = Math.min(reconnectDelay * 1.5, 6000);
+    if(reconnectTimer)return;
+    reconnectTimer=setTimeout(function(){
+      reconnectTimer=null;
+      reconnectDelay=Math.min(reconnectDelay*1.5,5000);
       connect();
-    }, reconnectDelay);
+    },reconnectDelay);
   }
 
   function onMessage(e){
-    var data = e.data;
-    if(typeof data !== 'string') return;
-    if(data === 'pong') return;
+    var data=e.data;
+    if(typeof data!=='string')return;
 
-    if(data.indexOf('script:') === 0){
-      var txt = data.substring(7);
-      if(ta.value !== txt){
-        // Ne pas écraser si l'utilisateur est en train de taper
-        if(document.activeElement !== ta){
-          ta.value = txt;
-        }
-        lastSentScript = txt;
+    if(data==='pong')return;
+    if(data==='auth_required'){
+      isAuthed=false;
+      if(token&&token.length===6){
+        ws.send('auth:'+token);
+      } else {
+        showAuth();
       }
+      return;
+    }
+    if(data==='auth_ok'){
+      isAuthed=true;
+      localStorage.setItem('promptToken',token);
+      hideAuth();
+      authInput.value='';
+      authSubmit.disabled=true;
+      setStatus('Connecté','#4CAF50');
+      return;
+    }
+    if(data==='auth_fail'){
+      isAuthed=false;
+      token='';
+      localStorage.removeItem('promptToken');
+      authInput.value='';
+      authSubmit.disabled=true;
+      showAuth('Code incorrect');
+      return;
+    }
+
+    if(data.indexOf('script:')===0){
+      var txt=data.substring(7);
+      if(ta.value!==txt&&document.activeElement!==ta){
+        ta.value=txt;
+      }
+      lastSentScript=txt;
       setSyncOk();
       return;
     }
 
-    var d;
-    try { d = JSON.parse(data); } catch(_) { return; }
-    if(!d) return;
+    var d;try{d=JSON.parse(data);}catch(_){return;}
+    if(!d)return;
 
-    $('ip').innerHTML = d.playing ? '&#9646;&#9646;' : '&#9654;';
-    $('lp').textContent = d.playing ? 'PAUSE' : 'REPRENDRE';
-    $('spd').textContent = d.speed;
-    $('pct').textContent = d.progress + '%';
-    $('prog').style.width = d.progress + '%';
-    $('ir').innerHTML = d.recording ? '&#9209;' : '&#9210;';
-    $('lr').textContent = d.recording ? ('STOP — ' + d.duration) : 'DÉMARRER L\'ENREGISTREMENT';
-
-    var ro = $('rec-overlay');
-    var si = $('stream-img');
-    if(d.recording){
-      ro.style.display = 'flex';
-      $('br').classList.add('on');
-    } else {
-      // Forcer le rechargement du stream après un REC pour éviter une frame figée
-      if(ro.style.display === 'flex'){
-        si.src = '/stream?t=' + Date.now();
+    if('playing' in d){
+      $('ip').innerHTML=d.playing?'&#9646;&#9646;':'&#9654;';
+      $('lp').textContent=d.playing?'PAUSE':'REPRENDRE';
+    }
+    if('speed' in d) $('spd').textContent=d.speed;
+    if('progress' in d){
+      $('pct').textContent=d.progress+'%';
+      $('prog').style.width=d.progress+'%';
+    }
+    if('recording' in d){
+      $('ir').innerHTML=d.recording?'&#9209;':'&#9210;';
+      $('lr').textContent=d.recording?('STOP — '+(d.duration||'00:00:00')):'DÉMARRER L\'ENREGISTREMENT';
+      var ro=$('rec-overlay'), si=$('stream-img');
+      if(d.recording){
+        ro.style.display='flex';
+        $('br').classList.add('on');
+      } else {
+        if(ro.style.display==='flex'){
+          si.src='/stream?t='+Date.now();
+        }
+        ro.style.display='none';
+        $('br').classList.remove('on');
       }
-      ro.style.display = 'none';
-      $('br').classList.remove('on');
     }
   }
 
   function s(cmd){
-    if(ws && ws.readyState === 1) ws.send(cmd);
+    if(!isAuthed||!ws||ws.readyState!==1)return;
+    ws.send(cmd);
   }
-  window.s = s; // expose pour les boutons inline
+  window.s=s;
 
-  // Sync script PC → téléphone (debounce)
-  ta.addEventListener('input', function(){
+  ta.addEventListener('input',function(){
     setSyncWarn('Saisie…');
     clearTimeout(scriptDebounce);
-    scriptDebounce = setTimeout(function(){
-      if(ws && ws.readyState === 1){
-        if(ta.value === lastSentScript){ setSyncOk(); return; }
-        ws.send('script:' + ta.value);
-        lastSentScript = ta.value;
-        setSyncOk();
-      } else {
-        setSyncWarn('Hors ligne — sera envoyé à la reconnexion');
-      }
-    }, 500);
+    scriptDebounce=setTimeout(function(){
+      if(!isAuthed||!ws||ws.readyState!==1){setSyncWarn('Hors ligne');return;}
+      if(ta.value===lastSentScript){setSyncOk();return;}
+      ws.send('script:'+ta.value);
+      lastSentScript=ta.value;
+      setSyncOk();
+    },500);
   });
 
-  // Raccourcis clavier — désactivés quand on tape dans la zone script
-  document.addEventListener('keydown', function(e){
-    if(document.activeElement === ta) return;
+  document.addEventListener('keydown',function(e){
+    if(document.activeElement===ta)return;
+    if(document.activeElement===authInput)return;
     switch(e.code){
-      case 'Space':     e.preventDefault(); s('toggle'); break;
-      case 'ArrowLeft': e.preventDefault(); s('rewind2'); break;
-      case 'ArrowUp':   e.preventDefault(); s('speed+'); break;
-      case 'ArrowDown': e.preventDefault(); s('speed-'); break;
-      case 'Home':      e.preventDefault(); s('home'); break;
-      case 'KeyR':      s('rec'); break;
+      case 'Space':e.preventDefault();s('toggle');break;
+      case 'ArrowLeft':e.preventDefault();s('rewind2');break;
+      case 'ArrowRight':e.preventDefault();s('forward2');break;
+      case 'ArrowUp':e.preventDefault();s('speed+');break;
+      case 'ArrowDown':e.preventDefault();s('speed-');break;
+      case 'Home':e.preventDefault();s('home');break;
+      case 'KeyR':s('rec');break;
     }
   });
 
